@@ -1,0 +1,57 @@
+:root {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  color: #30282a;
+  background: #f8f5f3;
+  font-synthesis: none;
+  --rose: #cc6278;
+  --rose-dark: #ad4c62;
+  --rose-soft: #fbecef;
+  --gold: #c7944f;
+  --gold-soft: #fbf3e7;
+  --violet: #9270b2;
+  --violet-soft: #f3edf9;
+  --green: #5a988b;
+  --green-soft: #eaf5f2;
+  --border: #ebe4e1;
+  --muted: #91868a;
+  --shadow: 0 8px 30px rgba(73, 45, 52, 0.06);
+  --el-color-primary: #cc6278;
+  --el-color-primary-light-3: #d98798;
+  --el-color-primary-light-5: #e6a5b2;
+  --el-color-primary-light-7: #f1c7cf;
+  --el-color-primary-light-8: #f6dce1;
+  --el-color-primary-light-9: #fbeef1;
+  --el-color-primary-dark-2: #ad4c62;
+  --el-border-radius-base: 9px;
+  --el-border-color: #e8dfdc;
+  --el-text-color-primary: #3d3235;
+  --el-text-color-regular: #716669;
+  --el-fill-color-light: #faf7f6;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  min-height: 100%;
+  margin: 0;
+}
+body {
+  min-width: 320px;
+  background: #f8f5f3;
+}
+body,
+.el-overlay,
+.el-message,
+.el-message-box {
+  --el-color-primary: #cc6278;
+  --el-color-primary-light-3: #d98798;
+  --el-color-primary-light-5: #e6a5b2;
+  --el-color-primary-light-7: #f1c7cf;
+  --el-color-primary-light-8: #f6dce1;
+  --el-color-primary-light-9: #fbeef1;
+  --el-color-primary-dark-2: #ad4c62;
+}

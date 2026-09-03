@@ -1,0 +1,230 @@
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+}
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 30;
+  width: 246px;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 18px 18px;
+  background: #342a2d;
+  color: white;
+  box-shadow: 8px 0 30px rgba(45, 33, 37, 0.08);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 9px 24px;
+}
+.brand-mark,
+.loading-mark {
+  width: 43px;
+  height: 43px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  border-radius: 12px;
+  background: linear-gradient(135deg, #d97b8d, #a94e63);
+  color: white;
+  font-family: Georgia, serif;
+  font-size: 15px;
+  box-shadow: 0 7px 18px rgba(211, 99, 122, 0.25);
+}
+.brand strong {
+  display: block;
+  font-family: Georgia, 'Songti SC', serif;
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+.brand span {
+  display: block;
+  margin-top: 2px;
+  color: #a99b9f;
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+.store-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 22px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.store-icon {
+  width: 33px;
+  height: 33px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(215, 112, 132, 0.18);
+  color: #e48b9d;
+}
+.store-card b {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+}
+.store-card small {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  color: #a99b9f;
+  font-size: 10px;
+}
+.store-card i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #72c49f;
+  box-shadow: 0 0 0 3px rgba(114, 196, 159, 0.12);
+}
+.nav-caption {
+  margin: 0 11px 9px;
+  color: #817378;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+}
+.sidebar nav {
+  display: grid;
+  gap: 5px;
+}
+.sidebar nav a {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  color: #bdafb3;
+  text-decoration: none;
+  font-size: 13px;
+  transition: 0.2s;
+}
+.sidebar nav a:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.05);
+}
+.sidebar nav a.router-link-active {
+  color: white;
+  background: linear-gradient(90deg, rgba(202, 96, 118, 0.28), rgba(202, 96, 118, 0.08));
+}
+.sidebar nav a.router-link-active::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  width: 3px;
+  height: 22px;
+  border-radius: 0 3px 3px 0;
+  background: #dc7b8e;
+}
+.sidebar-spacer {
+  flex: 1;
+}
+.bottom-nav {
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.profile-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 9px 3px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.profile-card b {
+  display: block;
+  font-size: 12px;
+}
+.profile-card span {
+  color: #8d8084;
+  font-size: 10px;
+}
+.profile-card .more {
+  margin-left: auto;
+  letter-spacing: 2px;
+}
+.avatar {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #e193a1, #b55268);
+  color: white;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 5px 12px rgba(190, 78, 102, 0.2);
+}
+.avatar.small {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+}
+
+.main-area {
+  width: calc(100% - 246px);
+  min-height: 100vh;
+  margin-left: 246px;
+}
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-height: 82px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 30px;
+  border-bottom: 1px solid rgba(232, 224, 221, 0.85);
+  background: rgba(250, 248, 247, 0.88);
+  backdrop-filter: blur(16px);
+}
+.topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.topbar h1 {
+  margin: 0;
+  color: #33292c;
+  font-size: 21px;
+  font-weight: 700;
+}
+.topbar p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+.global-search {
+  width: 245px;
+}
+.global-search kbd {
+  padding: 2px 5px;
+  border: 1px solid #e7dfdc;
+  border-radius: 4px;
+  background: #f9f7f6;
+  color: #a09699;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.notification-badge .el-badge__content.is-fixed {
+  top: 5px;
+  right: 8px;
+}
+.menu-button {
+  display: none;
+}

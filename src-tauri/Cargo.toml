@@ -1,0 +1,24 @@
+[package]
+name = "jumeimuzi-salon"
+version = "0.1.1"
+description = "聚尚木子美容院本地管理系统"
+authors = ["Jumei Muzi"]
+edition = "2021"
+
+[lib]
+name = "jumeimuzi_salon_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+argon2 = "0.5"

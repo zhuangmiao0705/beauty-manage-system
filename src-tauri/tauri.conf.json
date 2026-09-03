@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "聚尚木子",
+  "version": "0.1.1",
+  "identifier": "com.jumeimuzi.salon",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "聚尚木子 · 门店管理",
+        "width": 1360,
+        "height": 860,
+        "minWidth": 1080,
+        "minHeight": 700,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Business",
+    "shortDescription": "美容院会员、服务与营收管理",
+    "longDescription": "聚尚木子美容院本地离线管理系统，数据保存在本机。",
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+.flex {
+  display: flex;
+}
+.flex-vertical-center {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+.flex-horizontal-center {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+}
+.gap-5 {
+  gap: 5px;
+}
