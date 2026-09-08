@@ -1,0 +1,63 @@
+name: 发布桌面应用
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'app-v*'
+
+jobs:
+  publish-tauri:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: '--bundles nsis'
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: 配置 Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: 缓存 Rust 构建产物
+        uses: swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建并发布安装包
+        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          tagName: app-v__VERSION__
+          releaseName: '聚尚木子 v__VERSION__'
+          releaseBody: '聚尚木子门店管理系统稳定版更新。安装更新不会删除本机业务数据。'
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}

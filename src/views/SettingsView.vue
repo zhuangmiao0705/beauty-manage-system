@@ -19,6 +19,7 @@ import { isTauriRuntime } from '../platform/tauri'
 import { errorMessage, notify } from '../utils/feedback'
 
 const busy = ref('')
+const updateProgress = ref<number | null>(null)
 async function backup() {
   busy.value = 'backup'
   try {
@@ -52,23 +53,53 @@ async function restore() {
 }
 async function checkUpdate() {
   busy.value = 'update'
+  updateProgress.value = null
   try {
     if (!isTauriRuntime()) {
       notify('浏览器演示模式：当前已是最新版本')
       return
     }
-    notify('自动更新服务尚未启用，请使用安装包覆盖更新')
-    return
-    /* 启用正式更新服务器后恢复以下代码：
     const { check } = await import('@tauri-apps/plugin-updater')
-    const update = await check()
-    if (!update?.available) notify('当前已是最新版本')
-    else if (confirm(`发现新版本 ${update.version}，是否立即更新？`)) {
-      await update.downloadAndInstall()
-      const { relaunch } = await import('@tauri-apps/plugin-process')
-      await relaunch()
+    const update = await check({ timeout: 30_000 })
+    if (!update) {
+      notify('当前已是最新版本')
+      return
     }
-    */
+
+    try {
+      await ElMessageBox.confirm(
+        `发现新版本 ${update.version}，更新前将自动备份本地数据。是否立即更新？`,
+        '发现应用更新',
+        {
+          type: 'success',
+          confirmButtonText: '立即更新',
+          cancelButtonText: '稍后再说'
+        }
+      )
+    } catch {
+      return
+    }
+
+    await createBackup()
+    let downloaded = 0
+    let contentLength = 0
+    await update.downloadAndInstall((event) => {
+      if (event.event === 'Started') {
+        contentLength = event.data.contentLength ?? 0
+        updateProgress.value = contentLength > 0 ? 0 : null
+      } else if (event.event === 'Progress') {
+        downloaded += event.data.chunkLength
+        if (contentLength > 0) {
+          updateProgress.value = Math.min(100, Math.round((downloaded / contentLength) * 100))
+        }
+      } else if (event.event === 'Finished') {
+        updateProgress.value = 100
+      }
+    })
+
+    notify('更新安装完成，应用即将重新启动')
+    const { relaunch } = await import('@tauri-apps/plugin-process')
+    await relaunch()
   } catch (reason) {
     notify(errorMessage(reason, '检查更新失败'), 'error')
   } finally {
@@ -198,7 +229,7 @@ async function checkUpdate() {
           @click="checkUpdate"
         >
           <RefreshCw :size="17" />
-          检查应用更新
+          {{ updateProgress === null ? '检查应用更新' : `正在更新 ${updateProgress}%` }}
         </el-button>
       </article>
     </section>

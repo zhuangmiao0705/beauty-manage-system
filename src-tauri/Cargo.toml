@@ -1,6 +1,6 @@
 [package]
 name = "jumeimuzi-salon"
-version = "0.1.1"
+version = "0.2.0"
 description = "聚尚木子美容院本地管理系统"
 authors = ["Jumei Muzi"]
 edition = "2021"
