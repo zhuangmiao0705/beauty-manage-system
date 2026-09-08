@@ -31,7 +31,13 @@ import type {
   ServiceType
 } from '../types'
 import { buildEmployeeAvailability } from '../services/appointmentAvailability'
-import { currency, fullDateTime, localDateKey } from '../utils'
+import {
+  currency,
+  fullDateTime,
+  isPackagePurchaseAvailable,
+  localDateKey,
+  packagePurchaseLimitText
+} from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
 import { positiveNumberRule, requiredTextRule, validateForm } from '../utils/validation'
 
@@ -144,8 +150,7 @@ const availableMemberPackages = computed(() =>
     item =>
       item.memberId === form.memberId &&
       item.packageType === '套盒' &&
-      item.status === 'active' &&
-      item.remainingUses > 0
+      isPackagePurchaseAvailable(item, new Date(form.startsAt.replace(' ', 'T')))
   )
 )
 const selectedAppointmentProject = computed(() =>
@@ -877,7 +882,7 @@ watch(
               <el-option
                 v-for="item in availableMemberPackages"
                 :key="item.id"
-                :label="`${item.packageName}（剩余 ${item.remainingUses}/${item.totalUses} 次）`"
+                :label="`${item.packageName}（${packagePurchaseLimitText(item)}）`"
                 :value="item.id"
               />
             </el-select>

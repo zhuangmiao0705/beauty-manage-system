@@ -17,7 +17,12 @@ import type {
   PackagePurchaseInput,
   PackageType
 } from '../types'
-import { currency, fullDateTime } from '../utils'
+import {
+  currency,
+  fullDateTime,
+  packageDefinitionLimitText,
+  packagePurchaseLimitText
+} from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
 import { positiveNumberRule, validateForm } from '../utils/validation'
 
@@ -66,6 +71,7 @@ const purchaseRules = computed<FormRules<PackagePurchaseInput>>(() => ({
       trigger: ['blur', 'change'],
       validator: (_rule, value, callback) => {
         if (!selectedPackage.value || purchaseForm.paymentMethod === '现金') return callback()
+        if (selectedPackage.value.price === 0) return callback()
         const amount = Number(value)
         if (!Number.isFinite(amount) || amount <= 0)
           return callback(new Error('余额支付金额必须大于0'))
@@ -86,6 +92,7 @@ const purchaseRules = computed<FormRules<PackagePurchaseInput>>(() => ({
       trigger: 'change',
       validator: (_rule, value, callback) => {
         if (!selectedPackage.value || purchaseForm.paymentMethod === '会员余额') return callback()
+        if (selectedPackage.value.price === 0) return callback()
         const cashAmount = Number(value)
         if (!Number.isFinite(cashAmount) || cashAmount <= 0)
           return callback(new Error('现金支付金额必须大于0'))
@@ -224,7 +231,9 @@ async function submitConsumption() {
   if (!(await validateForm(consumeFormRef.value)) || !selectedPurchase.value) return
   try {
     await ElMessageBox.confirm(
-      `确认消耗“${selectedPurchase.value.packageName}”1次吗？确认后剩余次数将减1。`,
+      selectedPurchase.value.limitType === 'time'
+        ? `确认登记“${selectedPurchase.value.packageName}”本次消费吗？该套餐在有效期内不限次数。`
+        : `确认消耗“${selectedPurchase.value.packageName}”1次吗？确认后剩余次数将减1。`,
       '确认套餐消耗',
       { type: 'warning', confirmButtonText: '确认消耗', cancelButtonText: '取消' }
     )
@@ -346,10 +355,9 @@ async function submitConsumption() {
         <el-table-column label="余额支付" min-width="110">
           <template #default="{ row }">{{ currency(row.balancePaymentAmount) }}</template>
         </el-table-column>
-        <el-table-column label="剩余次数" min-width="105">
+        <el-table-column label="使用限制" min-width="200">
           <template #default="{ row }">
-            <b>{{ row.remainingUses }}</b>
-            / {{ row.totalUses }}
+            {{ packagePurchaseLimitText(row as PackagePurchase) }}
           </template>
         </el-table-column>
         <el-table-column label="最近消耗时间" min-width="165">
@@ -412,7 +420,7 @@ async function submitConsumption() {
               <el-option
                 v-for="item in activePackages"
                 :key="item.id"
-                :label="`${item.name} · ${item.packageType} · ${currency(item.price)} · ${item.totalUses}次`"
+                :label="`${item.name} · ${item.packageType} · ${currency(item.price)} · ${packageDefinitionLimitText(item)}`"
                 :value="item.id"
               />
             </el-select>
@@ -453,8 +461,11 @@ async function submitConsumption() {
         </div>
       </el-form>
       <div v-if="selectedPackage && selectedMember" class="form-tip">
-        本次购买 {{ selectedPackage.name }}（{{ selectedPackage.packageType }}），共
-        {{ selectedPackage.totalUses }} 次；可用实付本金余额
+        本次购买 {{ selectedPackage.name }}（{{ selectedPackage.packageType }}），{{
+          selectedPackage.limitType === 'time'
+            ? `有效期 ${selectedPackage.validityDays} 天，期内不限次数`
+            : `共 ${selectedPackage.totalUses} 次`
+        }}；可用实付本金余额
         {{ currency(selectedMember.principalBalance) }}。赠送余额不可用于购买套餐。
       </div>
       <template #footer>
@@ -466,7 +477,7 @@ async function submitConsumption() {
     <BaseModal
       v-if="modal === 'consume' && selectedPurchase"
       title="套餐消耗"
-      :subtitle="`${selectedPurchase.memberName} · ${selectedPurchase.packageName} · 剩余${selectedPurchase.remainingUses}次`"
+      :subtitle="`${selectedPurchase.memberName} · ${selectedPurchase.packageName} · ${packagePurchaseLimitText(selectedPurchase)}`"
       @close="modal = null"
     >
       <el-form
@@ -501,7 +512,9 @@ async function submitConsumption() {
         </div>
       </el-form>
       <div class="form-tip">
-        确认后剩余次数将减1，并自动生成一条{{
+        确认后{{
+          selectedPurchase.limitType === 'time' ? '登记本次消费' : '剩余次数减1'
+        }}，并自动生成一条{{
           selectedPurchase.packageType === '套盒' ? '套盒手工' : '普通手工'
         }}服务及提成记录。
       </div>
@@ -528,7 +541,11 @@ async function submitConsumption() {
         <el-table-column label="服务时长" min-width="100">
           <template #default="{ row }">{{ row.duration }} 分钟</template>
         </el-table-column>
-        <el-table-column prop="remainingAfter" label="消耗后剩余" min-width="110" />
+        <el-table-column label="消耗后剩余" min-width="110">
+          <template #default="{ row }">
+            {{ selectedPurchase.limitType === 'time' ? '有效期内' : `${row.remainingAfter}次` }}
+          </template>
+        </el-table-column>
         <el-table-column prop="note" label="备注" min-width="160" show-overflow-tooltip />
       </el-table>
       <TablePagination

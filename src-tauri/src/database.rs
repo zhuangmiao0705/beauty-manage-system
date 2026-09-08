@@ -318,8 +318,10 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
              CREATE TABLE IF NOT EXISTS packages (
                id TEXT PRIMARY KEY,
                name TEXT NOT NULL UNIQUE,
-               price REAL NOT NULL CHECK(price>0),
+               price REAL NOT NULL CHECK(price>=0),
                total_uses INTEGER NOT NULL CHECK(total_uses>0),
+               limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time')),
+               validity_days INTEGER NOT NULL DEFAULT 0 CHECK(validity_days>=0),
                package_type TEXT NOT NULL DEFAULT '套盒' CHECK(package_type IN ('套盒','普通')),
                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
                created_at TEXT NOT NULL,
@@ -334,9 +336,12 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                package_id TEXT NOT NULL REFERENCES packages(id),
                package_name TEXT NOT NULL,
                package_type TEXT NOT NULL DEFAULT '套盒' CHECK(package_type IN ('套盒','普通')),
-               price REAL NOT NULL CHECK(price>0),
+               price REAL NOT NULL CHECK(price>=0),
                total_uses INTEGER NOT NULL CHECK(total_uses>0),
                remaining_uses INTEGER NOT NULL CHECK(remaining_uses>=0),
+               limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time')),
+               validity_days INTEGER NOT NULL DEFAULT 0 CHECK(validity_days>=0),
+               expires_at TEXT,
                payment_method TEXT NOT NULL CHECK(payment_method IN ('会员余额','现金','余额现金组合支付')),
                balance_payment_amount REAL NOT NULL DEFAULT 0 CHECK(balance_payment_amount>=0),
                cash_payment_amount REAL NOT NULL DEFAULT 0 CHECK(cash_payment_amount>=0),
@@ -685,7 +690,7 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                        employee TEXT NOT NULL,
                        package_id TEXT NOT NULL REFERENCES packages(id),
                        package_name TEXT NOT NULL,
-                       price REAL NOT NULL CHECK(price>0),
+                       price REAL NOT NULL CHECK(price>=0),
                        total_uses INTEGER NOT NULL CHECK(total_uses>0),
                        remaining_uses INTEGER NOT NULL CHECK(remaining_uses>=0),
                        payment_method TEXT NOT NULL CHECK(payment_method IN ('会员余额','现金','余额现金组合支付')),
@@ -948,6 +953,211 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
         connection
             .execute(
                 "INSERT INTO schema_migrations(version,applied_at) VALUES (9,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let free_package_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=10",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if free_package_migration_applied == 0 {
+        connection
+            .execute_batch("PRAGMA foreign_keys=OFF;")
+            .map_err(|error| error.to_string())?;
+        let migration_result = (|| -> Result<(), String> {
+            let transaction = connection
+                .unchecked_transaction()
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute_batch(
+                    "ALTER TABLE package_consumptions RENAME TO package_consumptions_legacy_v10;
+                     ALTER TABLE appointments RENAME TO appointments_legacy_v10;
+                     ALTER TABLE package_purchases RENAME TO package_purchases_legacy_v10;
+                     ALTER TABLE packages RENAME TO packages_legacy_v10;
+
+                     CREATE TABLE packages (
+                       id TEXT PRIMARY KEY,
+                       name TEXT NOT NULL UNIQUE,
+                       price REAL NOT NULL CHECK(price>=0),
+                       total_uses INTEGER NOT NULL CHECK(total_uses>0),
+                       package_type TEXT NOT NULL DEFAULT '套盒'
+                         CHECK(package_type IN ('套盒','普通')),
+                       status TEXT NOT NULL DEFAULT 'active'
+                         CHECK(status IN ('active','inactive')),
+                       created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL
+                     );
+                     INSERT INTO packages
+                       (id,name,price,total_uses,package_type,status,created_at,updated_at)
+                     SELECT id,name,price,total_uses,package_type,status,created_at,updated_at
+                     FROM packages_legacy_v10;
+
+                     CREATE TABLE package_purchases (
+                       id TEXT PRIMARY KEY,
+                       member_id TEXT NOT NULL REFERENCES members(id),
+                       member_name TEXT NOT NULL,
+                       employee TEXT NOT NULL,
+                       package_id TEXT NOT NULL REFERENCES packages(id),
+                       package_name TEXT NOT NULL,
+                       package_type TEXT NOT NULL DEFAULT '套盒'
+                         CHECK(package_type IN ('套盒','普通')),
+                       price REAL NOT NULL CHECK(price>=0),
+                       total_uses INTEGER NOT NULL CHECK(total_uses>0),
+                       remaining_uses INTEGER NOT NULL CHECK(remaining_uses>=0),
+                       payment_method TEXT NOT NULL
+                         CHECK(payment_method IN ('会员余额','现金','余额现金组合支付')),
+                       balance_payment_amount REAL NOT NULL DEFAULT 0
+                         CHECK(balance_payment_amount>=0),
+                       cash_payment_amount REAL NOT NULL DEFAULT 0
+                         CHECK(cash_payment_amount>=0),
+                       status TEXT NOT NULL DEFAULT 'active'
+                         CHECK(status IN ('active','completed')),
+                       purchased_at TEXT NOT NULL,
+                       last_consumed_at TEXT,
+                       commission REAL NOT NULL DEFAULT 0,
+                       commission_rule_version INTEGER NOT NULL DEFAULT 2,
+                       transaction_id TEXT NOT NULL DEFAULT ''
+                     );
+                     INSERT INTO package_purchases
+                       (id,member_id,member_name,employee,package_id,package_name,package_type,
+                        price,total_uses,remaining_uses,payment_method,balance_payment_amount,
+                        cash_payment_amount,status,purchased_at,last_consumed_at,commission,
+                        commission_rule_version,transaction_id)
+                     SELECT id,member_id,member_name,employee,package_id,package_name,package_type,
+                            price,total_uses,remaining_uses,payment_method,balance_payment_amount,
+                            cash_payment_amount,status,purchased_at,last_consumed_at,commission,
+                            commission_rule_version,transaction_id
+                     FROM package_purchases_legacy_v10;
+
+                     CREATE TABLE package_consumptions (
+                       id TEXT PRIMARY KEY,
+                       package_purchase_id TEXT NOT NULL REFERENCES package_purchases(id),
+                       member_id TEXT NOT NULL REFERENCES members(id),
+                       member_name TEXT NOT NULL,
+                       employee TEXT NOT NULL,
+                       package_name TEXT NOT NULL,
+                       consumed_at TEXT NOT NULL,
+                       remaining_after INTEGER NOT NULL CHECK(remaining_after>=0),
+                       commission REAL NOT NULL DEFAULT 0,
+                       service_id TEXT NOT NULL REFERENCES services(id),
+                       duration INTEGER NOT NULL DEFAULT 60,
+                       note TEXT NOT NULL DEFAULT ''
+                     );
+                     INSERT INTO package_consumptions
+                       (id,package_purchase_id,member_id,member_name,employee,package_name,
+                        consumed_at,remaining_after,commission,service_id,duration,note)
+                     SELECT id,package_purchase_id,member_id,member_name,employee,package_name,
+                            consumed_at,remaining_after,commission,service_id,duration,note
+                     FROM package_consumptions_legacy_v10;
+
+                     CREATE TABLE appointments (
+                       id TEXT PRIMARY KEY,
+                       customer_type TEXT NOT NULL CHECK(customer_type IN ('member','guest')),
+                       member_id TEXT REFERENCES members(id),
+                       customer_name TEXT NOT NULL,
+                       customer_phone TEXT NOT NULL,
+                       employee TEXT NOT NULL,
+                       service_type TEXT NOT NULL CHECK(service_type IN ('套盒手工','普通手工')),
+                       service_name TEXT NOT NULL,
+                       package_purchase_id TEXT REFERENCES package_purchases(id),
+                       starts_at TEXT NOT NULL,
+                       duration INTEGER NOT NULL CHECK(duration>0),
+                       status TEXT NOT NULL DEFAULT 'pending'
+                         CHECK(status IN ('pending','arrived','in_service','completed','cancelled','no_show')),
+                       note TEXT NOT NULL DEFAULT '',
+                       created_by TEXT NOT NULL,
+                       created_at TEXT NOT NULL,
+                       updated_at TEXT NOT NULL,
+                       completed_service_id TEXT REFERENCES services(id),
+                       project_id TEXT
+                     );
+                     INSERT INTO appointments
+                       (id,customer_type,member_id,customer_name,customer_phone,employee,
+                        service_type,service_name,package_purchase_id,starts_at,duration,status,
+                        note,created_by,created_at,updated_at,completed_service_id,project_id)
+                     SELECT id,customer_type,member_id,customer_name,customer_phone,employee,
+                            service_type,service_name,package_purchase_id,starts_at,duration,status,
+                            note,created_by,created_at,updated_at,completed_service_id,project_id
+                     FROM appointments_legacy_v10;
+
+                     DROP TABLE package_consumptions_legacy_v10;
+                     DROP TABLE appointments_legacy_v10;
+                     DROP TABLE package_purchases_legacy_v10;
+                     DROP TABLE packages_legacy_v10;
+
+                     CREATE INDEX idx_package_purchases_member
+                       ON package_purchases(member_id,purchased_at);
+                     CREATE INDEX idx_package_purchases_employee
+                       ON package_purchases(employee,purchased_at);
+                     CREATE INDEX idx_package_consumptions_purchase
+                       ON package_consumptions(package_purchase_id,consumed_at);
+                     CREATE INDEX idx_appointments_starts ON appointments(starts_at);
+                     CREATE INDEX idx_appointments_employee ON appointments(employee,starts_at);
+                     CREATE INDEX idx_appointments_status ON appointments(status,starts_at);
+                     CREATE INDEX idx_appointments_project ON appointments(project_id);",
+                )
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations(version,applied_at) VALUES (10,?1)",
+                    params![now],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction.commit().map_err(|error| error.to_string())
+        })();
+        let foreign_keys_result = connection
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|error| error.to_string());
+        migration_result?;
+        foreign_keys_result?;
+
+        let foreign_key_errors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .map_err(|error| error.to_string())?;
+        if foreign_key_errors != 0 {
+            return Err("赠送套餐数据库迁移后存在无效关联".to_string());
+        }
+    }
+
+    add_column(
+        connection,
+        "packages",
+        "limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time'))",
+    )?;
+    add_column(
+        connection,
+        "packages",
+        "validity_days INTEGER NOT NULL DEFAULT 0 CHECK(validity_days>=0)",
+    )?;
+    add_column(
+        connection,
+        "package_purchases",
+        "limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time'))",
+    )?;
+    add_column(
+        connection,
+        "package_purchases",
+        "validity_days INTEGER NOT NULL DEFAULT 0 CHECK(validity_days>=0)",
+    )?;
+    add_column(connection, "package_purchases", "expires_at TEXT")?;
+    let package_limit_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=11",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if package_limit_migration_applied == 0 {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (11,?1)",
                 params![now],
             )
             .map_err(|error| error.to_string())?;
@@ -1274,7 +1484,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let packages = {
-        let mut statement = connection.prepare("SELECT id,name,price,total_uses,package_type,status,created_at,updated_at FROM packages ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,name,price,total_uses,limit_type,validity_days,package_type,status,created_at,updated_at FROM packages ORDER BY created_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackageDefinition {
@@ -1282,10 +1492,12 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     name: row.get(1)?,
                     price: row.get(2)?,
                     total_uses: row.get(3)?,
-                    package_type: row.get(4)?,
-                    status: row.get(5)?,
-                    created_at: row.get(6)?,
-                    updated_at: row.get(7)?,
+                    limit_type: row.get(4)?,
+                    validity_days: row.get(5)?,
+                    package_type: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1293,7 +1505,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let package_purchases = {
-        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,remaining_uses,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,remaining_uses,limit_type,validity_days,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackagePurchase {
@@ -1307,15 +1519,27 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     price: row.get(7)?,
                     total_uses: row.get(8)?,
                     remaining_uses: row.get(9)?,
-                    payment_method: row.get(10)?,
-                    balance_payment_amount: row.get(11)?,
-                    cash_payment_amount: row.get(12)?,
-                    status: row.get(13)?,
-                    purchased_at: row.get(14)?,
-                    last_consumed_at: row.get(15)?,
-                    commission: row.get(16)?,
-                    commission_rule_version: row.get(17)?,
-                    transaction_id: row.get(18)?,
+                    limit_type: row.get(10)?,
+                    validity_days: row.get(11)?,
+                    expires_at: row.get(12)?,
+                    payment_method: row.get(13)?,
+                    balance_payment_amount: row.get(14)?,
+                    cash_payment_amount: row.get(15)?,
+                    status: if row.get::<_, String>(16)? == "active"
+                        && row.get::<_, String>(10)? == "time"
+                        && row
+                            .get::<_, Option<String>>(12)?
+                            .is_some_and(|expires_at| expires_at <= Utc::now().to_rfc3339())
+                    {
+                        "completed".to_string()
+                    } else {
+                        row.get(16)?
+                    },
+                    purchased_at: row.get(17)?,
+                    last_consumed_at: row.get(18)?,
+                    commission: row.get(19)?,
+                    commission_rule_version: row.get(20)?,
+                    transaction_id: row.get(21)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1453,12 +1677,35 @@ mod tests {
         let connection = Connection::open_in_memory().expect("open database");
         migrate_database(&connection).expect("first migration");
         seed_employees(&connection).expect("seed employees");
+        connection
+            .execute_batch(
+                "INSERT INTO members
+                   (id,name,phone,balance,principal_balance,gift_balance,total_recharge,
+                    total_consumption,join_date,last_visit,status)
+                 VALUES ('gift-member','赠送会员','13800000000',0,0,0,0,0,
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','active');
+                 INSERT INTO packages
+                   (id,name,price,total_uses,package_type,status,created_at,updated_at)
+                 VALUES ('gift-package','赠送套餐',0,3,'普通','active',
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+                 INSERT INTO package_purchases
+                   (id,member_id,member_name,employee,package_id,package_name,package_type,price,
+                    total_uses,remaining_uses,payment_method,balance_payment_amount,
+                    cash_payment_amount,status,purchased_at,last_consumed_at,commission,
+                    commission_rule_version,transaction_id)
+                 VALUES ('gift-purchase','gift-member','赠送会员','林晓雅','gift-package',
+                         '赠送套餐','普通',0,3,3,'会员余额',0,0,'active',
+                         '2026-01-01T00:00:00Z',NULL,0,3,'');",
+            )
+            .expect("zero-price package should be persisted");
         migrate_database(&connection).expect("second migration");
         let data = snapshot(&connection).expect("snapshot");
         assert_eq!(data.employees.len(), 4);
         assert!(!data.commission_configs.is_empty());
         assert_eq!(data.employee_status_events.len(), 4);
         assert_eq!(data.employee_compensations.len(), 4);
+        assert_eq!(data.packages[0].price, 0.0);
+        assert_eq!(data.package_purchases[0].price, 0.0);
         assert!(!column_exists(&connection, "members", "level").expect("member schema"));
     }
 

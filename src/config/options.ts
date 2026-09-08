@@ -1,4 +1,10 @@
-import type { AppointmentStatus, PackageType, ServiceType, TransactionType } from '../types'
+import type {
+  AppointmentStatus,
+  PackageLimitType,
+  PackageType,
+  ServiceType,
+  TransactionType
+} from '../types'
 
 export const RECHARGE_PAYMENT_METHODS = ['微信支付', '支付宝', '现金', '银行卡'] as const
 export const PACKAGE_PAYMENT_METHODS = ['会员余额', '现金', '余额现金组合支付'] as const
@@ -9,6 +15,10 @@ export const SERVICE_TYPE_LABELS: Record<ServiceType, string> = {
   套盒手工: '套盒消费'
 }
 export const PACKAGE_TYPES: PackageType[] = ['套盒', '普通']
+export const PACKAGE_LIMIT_TYPES: Array<{ value: PackageLimitType; label: string }> = [
+  { value: 'count', label: '次数限制' },
+  { value: 'time', label: '时间限制' }
+]
 export const APPOINTMENT_STATUS_OPTIONS: Array<{
   value: AppointmentStatus
   label: string

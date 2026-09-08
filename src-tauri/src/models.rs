@@ -190,6 +190,8 @@ pub(crate) struct PackageDefinition {
     pub(crate) name: String,
     pub(crate) price: f64,
     pub(crate) total_uses: i64,
+    pub(crate) limit_type: String,
+    pub(crate) validity_days: i64,
     pub(crate) package_type: String,
     pub(crate) status: String,
     pub(crate) created_at: String,
@@ -209,6 +211,9 @@ pub(crate) struct PackagePurchase {
     pub(crate) price: f64,
     pub(crate) total_uses: i64,
     pub(crate) remaining_uses: i64,
+    pub(crate) limit_type: String,
+    pub(crate) validity_days: i64,
+    pub(crate) expires_at: Option<String>,
     pub(crate) payment_method: String,
     pub(crate) balance_payment_amount: f64,
     pub(crate) cash_payment_amount: f64,
@@ -372,6 +377,8 @@ pub(crate) struct PackageDefinitionInput {
     pub(crate) name: String,
     pub(crate) price: f64,
     pub(crate) total_uses: i64,
+    pub(crate) limit_type: String,
+    pub(crate) validity_days: i64,
     pub(crate) package_type: String,
 }
 

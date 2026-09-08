@@ -2,6 +2,7 @@ export type EntityStatus = 'active' | 'inactive'
 export type TransactionType = 'recharge' | 'consume'
 export type ServiceType = '套盒手工' | '普通手工'
 export type PackageType = '套盒' | '普通'
+export type PackageLimitType = 'count' | 'time'
 export type PackagePaymentMethod = '会员余额' | '现金' | '余额现金组合支付'
 export type ExternalPaymentMethod = '微信支付' | '支付宝' | '现金' | '银行卡'
 export type AppointmentStatus =
@@ -127,6 +128,8 @@ export interface PackageDefinition {
   name: string
   price: number
   totalUses: number
+  limitType: PackageLimitType
+  validityDays: number
   packageType: PackageType
   status: EntityStatus
   createdAt: string
@@ -144,6 +147,9 @@ export interface PackagePurchase {
   price: number
   totalUses: number
   remainingUses: number
+  limitType: PackageLimitType
+  validityDays: number
+  expiresAt: string | null
   paymentMethod: PackagePaymentMethod
   balancePaymentAmount: number
   cashPaymentAmount: number
@@ -282,6 +288,8 @@ export interface PackageDefinitionInput {
   name: string
   price: number
   totalUses: number
+  limitType: PackageLimitType
+  validityDays: number
   packageType: PackageType
 }
 

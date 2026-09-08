@@ -16,7 +16,7 @@ import type {
   PackagePurchaseInput,
   ProjectDefinitionInput
 } from '../types'
-import { localMonthKey } from '../utils'
+import { isPackagePurchaseAvailable, localMonthKey } from '../utils'
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100
 
@@ -111,14 +111,30 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   }
 
   snapshot.packagePurchases.forEach(purchase => {
-    purchase.packageType ??=
-      snapshot.packages.find(item => item.id === purchase.packageId)?.packageType ?? '套盒'
+    const packageDefinition = snapshot.packages.find(item => item.id === purchase.packageId)
+    purchase.packageType ??= packageDefinition?.packageType ?? '套盒'
+    purchase.limitType ??= packageDefinition?.limitType ?? 'count'
+    purchase.validityDays ??= packageDefinition?.validityDays ?? 0
+    purchase.expiresAt ??=
+      purchase.limitType === 'time' && purchase.validityDays > 0
+        ? new Date(
+            new Date(purchase.purchasedAt).getTime() + purchase.validityDays * 86_400_000
+          ).toISOString()
+        : null
+    if (
+      purchase.limitType === 'time' &&
+      purchase.expiresAt &&
+      new Date(purchase.expiresAt).getTime() <= Date.now()
+    )
+      purchase.status = 'completed'
     purchase.balancePaymentAmount ??= purchase.paymentMethod === '会员余额' ? purchase.price : 0
     purchase.cashPaymentAmount ??= purchase.paymentMethod === '现金' ? purchase.price : 0
   })
 
   snapshot.packages.forEach(item => {
     item.packageType ??= '套盒'
+    item.limitType ??= 'count'
+    item.validityDays ??= 0
   })
 
   snapshot.members.forEach(member => {
@@ -292,14 +308,26 @@ export function saveBrowserAttendance(snapshot: AppSnapshot, input: AttendanceIn
 }
 
 export function createBrowserPackage(snapshot: AppSnapshot, input: PackageDefinitionInput) {
-  if (snapshot.packages.some(item => item.name === input.name.trim()))
-    throw new Error('套餐名称已存在')
+  const name = input.name.trim()
+  if (
+    !name ||
+    !Number.isFinite(input.price) ||
+    input.price < 0 ||
+    !['count', 'time'].includes(input.limitType) ||
+    (input.limitType === 'count' && (!Number.isInteger(input.totalUses) || input.totalUses <= 0)) ||
+    (input.limitType === 'time' &&
+      (!Number.isInteger(input.validityDays) || input.validityDays <= 0))
+  )
+    throw new Error('套餐名称、价格或可用次数无效')
+  if (snapshot.packages.some(item => item.name === name)) throw new Error('套餐名称已存在')
   const now = new Date().toISOString()
   snapshot.packages.unshift({
     id: crypto.randomUUID(),
-    name: input.name.trim(),
-    price: input.price,
-    totalUses: input.totalUses,
+    name,
+    price: roundMoney(input.price),
+    totalUses: input.limitType === 'count' ? input.totalUses : 1,
+    limitType: input.limitType,
+    validityDays: input.limitType === 'time' ? input.validityDays : 0,
     packageType: input.packageType,
     status: 'active',
     createdAt: now,
@@ -314,10 +342,25 @@ export function updateBrowserPackage(
 ) {
   const packageItem = snapshot.packages.find(item => item.id === packageId)
   if (!packageItem) throw new Error('套餐不存在')
-  if (snapshot.packages.some(item => item.id !== packageId && item.name === input.name.trim()))
+  const name = input.name.trim()
+  if (
+    !name ||
+    !Number.isFinite(input.price) ||
+    input.price < 0 ||
+    !['count', 'time'].includes(input.limitType) ||
+    (input.limitType === 'count' && (!Number.isInteger(input.totalUses) || input.totalUses <= 0)) ||
+    (input.limitType === 'time' &&
+      (!Number.isInteger(input.validityDays) || input.validityDays <= 0))
+  )
+    throw new Error('套餐名称、价格或可用次数无效')
+  if (snapshot.packages.some(item => item.id !== packageId && item.name === name))
     throw new Error('套餐名称已存在')
-  Object.assign(packageItem, input, {
-    name: input.name.trim(),
+  Object.assign(packageItem, {
+    ...input,
+    name,
+    price: roundMoney(input.price),
+    totalUses: input.limitType === 'count' ? input.totalUses : 1,
+    validityDays: input.limitType === 'time' ? input.validityDays : 0,
     updatedAt: new Date().toISOString()
   })
 }
@@ -362,31 +405,37 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     throw new Error('实付本金余额不足，赠送余额不可购买套餐')
 
   const now = new Date().toISOString()
-  const transactionId = crypto.randomUUID()
+  const expiresAt =
+    packageItem.limitType === 'time'
+      ? new Date(Date.now() + packageItem.validityDays * 86_400_000).toISOString()
+      : null
+  const transactionId = packageItem.price > 0 ? crypto.randomUUID() : ''
   const purchaseId = crypto.randomUUID()
   member.principalBalance = roundMoney(member.principalBalance - balancePaymentAmount)
   member.balance = roundMoney(member.principalBalance + member.giftBalance)
   member.totalConsumption += packageItem.price
   member.lastVisit = now
-  snapshot.transactions.unshift({
-    id: transactionId,
-    memberId: member.id,
-    memberName: member.name,
-    type: 'consume',
-    amount: packageItem.price,
-    giftAmount: 0,
-    commission: 0,
-    commissionRuleVersion: COMMISSION_RULE_VERSION,
-    balanceAfter: member.balance,
-    paymentMethod: input.paymentMethod,
-    item: `套餐购买：${packageItem.name}`,
-    employee: employee.name,
-    createdAt: now,
-    note: '',
-    status: 'active',
-    sourceType: 'package_purchase',
-    sourceId: purchaseId
-  })
+  if (packageItem.price > 0) {
+    snapshot.transactions.unshift({
+      id: transactionId,
+      memberId: member.id,
+      memberName: member.name,
+      type: 'consume',
+      amount: packageItem.price,
+      giftAmount: 0,
+      commission: 0,
+      commissionRuleVersion: COMMISSION_RULE_VERSION,
+      balanceAfter: member.balance,
+      paymentMethod: input.paymentMethod,
+      item: `套餐购买：${packageItem.name}`,
+      employee: employee.name,
+      createdAt: now,
+      note: '',
+      status: 'active',
+      sourceType: 'package_purchase',
+      sourceId: purchaseId
+    })
+  }
   const compensation = snapshot.employeeCompensations.find(item => item.employeeId === employee.id)
   snapshot.packagePurchases.unshift({
     id: purchaseId,
@@ -399,6 +448,9 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     price: packageItem.price,
     totalUses: packageItem.totalUses,
     remainingUses: packageItem.totalUses,
+    limitType: packageItem.limitType,
+    validityDays: packageItem.validityDays,
+    expiresAt,
     paymentMethod: input.paymentMethod,
     balancePaymentAmount,
     cashPaymentAmount,
@@ -419,14 +471,14 @@ export function consumeBrowserPackage(snapshot: AppSnapshot, input: PackageConsu
   const employee = snapshot.employees.find(
     item => item.name === input.employee && item.status === 'active'
   )
-  if (!purchase || purchase.status !== 'active' || purchase.remainingUses <= 0)
-    throw new Error('该套餐已结束或剩余次数不足')
+  if (!purchase || !isPackagePurchaseAvailable(purchase))
+    throw new Error('该套餐已结束、已过期或剩余次数不足')
   if (!employee) throw new Error('服务员工无效')
   const now = new Date().toISOString()
   const serviceId = crypto.randomUUID()
-  purchase.remainingUses -= 1
+  if (purchase.limitType === 'count') purchase.remainingUses -= 1
   purchase.lastConsumedAt = now
-  if (purchase.remainingUses === 0) purchase.status = 'completed'
+  if (purchase.limitType === 'count' && purchase.remainingUses === 0) purchase.status = 'completed'
   const compensation = snapshot.employeeCompensations.find(item => item.employeeId === employee.id)
   const serviceType = purchase.packageType === '普通' ? '普通手工' : '套盒手工'
   const commission =

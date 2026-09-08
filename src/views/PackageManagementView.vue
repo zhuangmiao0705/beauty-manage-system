@@ -5,16 +5,36 @@ import { Plus, Search } from 'lucide-vue-next'
 import BaseModal from '../components/BaseModal.vue'
 import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
-import { PACKAGE_TYPES } from '../config/options'
+import { PACKAGE_LIMIT_TYPES, PACKAGE_TYPES } from '../config/options'
 import { addPackage, salonStore, setPackageStatus, updatePackage } from '../data/repository'
-import type { PackageDefinition, PackageDefinitionInput, PackageType } from '../types'
-import { currency, fullDateTime } from '../utils'
+import type {
+  PackageDefinition,
+  PackageDefinitionInput,
+  PackageLimitType,
+  PackageType
+} from '../types'
+import { currency, fullDateTime, packageDefinitionLimitText } from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
-import { positiveNumberRule, requiredTextRule, validateForm } from '../utils/validation'
+import {
+  nonNegativeNumberRule,
+  positiveNumberRule,
+  requiredTextRule,
+  validateForm
+} from '../utils/validation'
 
-type PackageFilters = { name: string; packageType: PackageType | ''; status: string }
+type PackageFilters = {
+  name: string
+  packageType: PackageType | ''
+  limitType: PackageLimitType | ''
+  status: string
+}
 
-const filterForm = reactive<PackageFilters>({ name: '', packageType: '', status: '' })
+const filterForm = reactive<PackageFilters>({
+  name: '',
+  packageType: '',
+  limitType: '',
+  status: ''
+})
 const appliedFilters = reactive<PackageFilters>({ ...filterForm })
 const modalVisible = ref(false)
 const saving = ref(false)
@@ -24,15 +44,21 @@ const packageForm = reactive<PackageDefinitionInput>({
   name: '',
   price: 0,
   totalUses: 1,
+  limitType: 'count',
+  validityDays: 30,
   packageType: '套盒'
 })
 
-const packageRules: FormRules<PackageDefinitionInput> = {
+const packageRules = computed<FormRules<PackageDefinitionInput>>(() => ({
   name: [requiredTextRule('请输入套餐名称')],
-  price: [positiveNumberRule('请输入大于 0 的套餐价格')],
-  totalUses: [positiveNumberRule('请输入大于 0 的可用次数')],
+  price: [nonNegativeNumberRule('套餐价格不能小于 0')],
+  totalUses:
+    packageForm.limitType === 'count' ? [positiveNumberRule('请输入大于 0 的可用次数')] : [],
+  validityDays:
+    packageForm.limitType === 'time' ? [positiveNumberRule('请输入大于 0 的有效天数')] : [],
+  limitType: [{ required: true, message: '请选择限制方式', trigger: 'change' }],
   packageType: [{ required: true, message: '请选择套餐类型', trigger: 'change' }]
-}
+}))
 
 const filteredPackages = computed(() =>
   salonStore.packages.filter(item => {
@@ -40,6 +66,7 @@ const filteredPackages = computed(() =>
     return (
       (!name || item.name.includes(name)) &&
       (!appliedFilters.packageType || item.packageType === appliedFilters.packageType) &&
+      (!appliedFilters.limitType || item.limitType === appliedFilters.limitType) &&
       (!appliedFilters.status || item.status === appliedFilters.status)
     )
   })
@@ -55,7 +82,7 @@ function queryPackages() {
 }
 
 function resetFilters() {
-  Object.assign(filterForm, { name: '', packageType: '', status: '' })
+  Object.assign(filterForm, { name: '', packageType: '', limitType: '', status: '' })
   queryPackages()
 }
 
@@ -68,19 +95,33 @@ function openPackage(item?: PackageDefinition) {
           name: item.name,
           price: item.price,
           totalUses: item.totalUses,
+          limitType: item.limitType,
+          validityDays: item.validityDays,
           packageType: item.packageType
         }
-      : { name: '', price: 0, totalUses: 1, packageType: '套盒' }
+      : {
+          name: '',
+          price: 0,
+          totalUses: 1,
+          limitType: 'count',
+          validityDays: 30,
+          packageType: '套盒'
+        }
   )
   modalVisible.value = true
 }
 
 async function submitPackage() {
   if (!(await validateForm(packageFormRef.value))) return
+  const input: PackageDefinitionInput = {
+    ...packageForm,
+    totalUses: packageForm.limitType === 'count' ? packageForm.totalUses : 1,
+    validityDays: packageForm.limitType === 'time' ? packageForm.validityDays : 0
+  }
   saving.value = true
   try {
-    if (editingPackage.value) await updatePackage(editingPackage.value.id, { ...packageForm })
-    else await addPackage({ ...packageForm })
+    if (editingPackage.value) await updatePackage(editingPackage.value.id, input)
+    else await addPackage(input)
     modalVisible.value = false
     notify(editingPackage.value ? '套餐配置已更新' : '套餐配置已创建')
   } catch (reason) {
@@ -134,6 +175,22 @@ async function togglePackage(item: PackageDefinition) {
           </el-select>
         </label>
         <label class="table-filter-field">
+          <span>限制方式</span>
+          <el-select
+            v-model="filterForm.limitType"
+            clearable
+            class="table-filter-select"
+            placeholder="请选择限制方式"
+          >
+            <el-option
+              v-for="item in PACKAGE_LIMIT_TYPES"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
+        </label>
+        <label class="table-filter-field">
           <span>状态</span>
           <el-select
             v-model="filterForm.status"
@@ -165,7 +222,16 @@ async function togglePackage(item: PackageDefinition) {
         <el-table-column label="价格" min-width="120">
           <template #default="{ row }">{{ currency(row.price) }}</template>
         </el-table-column>
-        <el-table-column prop="totalUses" label="可用次数" min-width="100" />
+        <el-table-column label="限制方式" min-width="100">
+          <template #default="{ row }">
+            {{ row.limitType === 'time' ? '时间限制' : '次数限制' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="使用限制" min-width="100">
+          <template #default="{ row }">
+            {{ packageDefinitionLimitText(row as PackageDefinition) }}
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag round :type="row.status === 'active' ? 'success' : 'info'">
@@ -221,8 +287,19 @@ async function togglePackage(item: PackageDefinition) {
           </el-form-item>
           <el-form-item label="固定价格" prop="price">
             <el-input-number v-model="packageForm.price" :min="0" :controls="false" align="left" />
+            <div class="form-tip">价格填写 0 时，将作为赠送套餐使用。</div>
           </el-form-item>
-          <el-form-item label="可用次数" prop="totalUses">
+          <el-form-item label="限制方式" prop="limitType">
+            <el-select v-model="packageForm.limitType">
+              <el-option
+                v-for="item in PACKAGE_LIMIT_TYPES"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="packageForm.limitType === 'count'" label="可用次数" prop="totalUses">
             <el-input-number
               v-model="packageForm.totalUses"
               :min="1"
@@ -230,6 +307,16 @@ async function togglePackage(item: PackageDefinition) {
               :controls="false"
               align="left"
             />
+          </el-form-item>
+          <el-form-item v-else label="有效天数" prop="validityDays">
+            <el-input-number
+              v-model="packageForm.validityDays"
+              :min="1"
+              :precision="0"
+              :controls="false"
+              align="left"
+            />
+            <div class="form-tip">从会员购买当天开始计算，有效期内不限使用次数。</div>
           </el-form-item>
         </div>
       </el-form>

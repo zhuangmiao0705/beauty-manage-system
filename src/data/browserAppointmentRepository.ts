@@ -5,6 +5,7 @@ import type {
   AppointmentInput,
   AppointmentStatus
 } from '../types'
+import { isPackagePurchaseAvailable } from '../utils'
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100
 
@@ -40,8 +41,7 @@ function resolveAppointment(snapshot: AppSnapshot, input: AppointmentInput) {
         item.id === input.packagePurchaseId &&
         item.memberId === memberId &&
         item.packageType === '套盒' &&
-        item.status === 'active' &&
-        item.remainingUses > 0
+        isPackagePurchaseAvailable(item, startsAt)
     )
     if (!purchase) throw new Error('没有找到该会员的可用套盒')
     serviceName = purchase.packageName
@@ -173,14 +173,14 @@ export function completeBrowserAppointment(
         item.id === appointment.packagePurchaseId &&
         item.memberId === appointment.memberId &&
         item.packageType === '套盒' &&
-        item.status === 'active' &&
-        item.remainingUses > 0
+        isPackagePurchaseAvailable(item, new Date(now))
     )
     if (!purchase) throw new Error('预约套盒已结束或没有剩余次数')
-    const remainingAfter = purchase.remainingUses - 1
+    const remainingAfter =
+      purchase.limitType === 'count' ? purchase.remainingUses - 1 : purchase.remainingUses
     purchase.remainingUses = remainingAfter
     purchase.lastConsumedAt = now
-    if (remainingAfter === 0) purchase.status = 'completed'
+    if (purchase.limitType === 'count' && remainingAfter === 0) purchase.status = 'completed'
     const commission = compensation?.packageServiceCommission ?? 10
     snapshot.services.unshift({
       id: serviceId,

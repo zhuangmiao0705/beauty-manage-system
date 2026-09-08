@@ -33,6 +33,20 @@ fn parse_starts_at(value: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|_| "预约时间格式无效".to_string())
 }
 
+fn package_is_available(
+    limit_type: &str,
+    remaining_uses: i64,
+    expires_at: Option<&str>,
+    at: DateTime<Utc>,
+) -> bool {
+    if limit_type == "time" {
+        return expires_at
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .is_some_and(|value| value.with_timezone(&Utc) > at);
+    }
+    remaining_uses > 0
+}
+
 fn time_ranges_overlap(
     starts_at: DateTime<Utc>,
     duration: i64,
@@ -133,15 +147,29 @@ fn resolve_appointment(
                 let member_id = member_id
                     .as_deref()
                     .ok_or_else(|| "套盒消费只能选择会员".to_string())?;
-                let package_name = connection
+                let (package_name, limit_type, remaining_uses, expires_at): (
+                    String,
+                    String,
+                    i64,
+                    Option<String>,
+                ) = connection
                     .query_row(
-                        "SELECT package_name FROM package_purchases
+                        "SELECT package_name,limit_type,remaining_uses,expires_at
+                         FROM package_purchases
                      WHERE id=?1 AND member_id=?2 AND package_type='套盒'
-                       AND status='active' AND remaining_uses>0",
+                       AND status='active'",
                         params![input.package_purchase_id, member_id],
-                        |row| row.get::<_, String>(0),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .map_err(|_| "没有找到该会员的可用套盒".to_string())?;
+                if !package_is_available(
+                    &limit_type,
+                    remaining_uses,
+                    expires_at.as_deref(),
+                    starts_at_value,
+                ) {
+                    return Err("该套盒在预约时间已过期或没有剩余次数".to_string());
+                }
                 (
                     package_name,
                     None,
@@ -433,24 +461,49 @@ fn complete_package_service(
         .5
         .as_deref()
         .ok_or_else(|| "套盒预约缺少套盒信息".to_string())?;
-    let (package_name, remaining_uses): (String, i64) = transaction
+    let (package_name, remaining_uses, limit_type, expires_at): (
+        String,
+        i64,
+        String,
+        Option<String>,
+    ) = transaction
         .query_row(
-            "SELECT package_name,remaining_uses FROM package_purchases
+            "SELECT package_name,remaining_uses,limit_type,expires_at FROM package_purchases
              WHERE id=?1 AND member_id=?2 AND package_type='套盒'
-               AND status='active' AND remaining_uses>0",
+               AND status='active'",
             params![purchase_id, member_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
-        .map_err(|_| "预约套盒已结束或没有剩余次数".to_string())?;
-    let remaining_after = remaining_uses - 1;
-    let changed = transaction
-        .execute(
+        .map_err(|_| "预约套盒已结束".to_string())?;
+    let now_value = parse_starts_at(now)?;
+    if !package_is_available(
+        &limit_type,
+        remaining_uses,
+        expires_at.as_deref(),
+        now_value,
+    ) {
+        return Err("预约套盒已过期或没有剩余次数".to_string());
+    }
+    let remaining_after = if limit_type == "count" {
+        remaining_uses - 1
+    } else {
+        remaining_uses
+    };
+    let changed = if limit_type == "count" {
+        transaction.execute(
             "UPDATE package_purchases SET remaining_uses=?1,last_consumed_at=?2,
              status=CASE WHEN ?1=0 THEN 'completed' ELSE 'active' END
              WHERE id=?3 AND remaining_uses=?4 AND status='active'",
             params![remaining_after, now, purchase_id, remaining_uses],
         )
-        .map_err(|error| error.to_string())?;
+    } else {
+        transaction.execute(
+            "UPDATE package_purchases SET last_consumed_at=?1
+             WHERE id=?2 AND status='active' AND expires_at>?1",
+            params![now, purchase_id],
+        )
+    }
+    .map_err(|error| error.to_string())?;
     if changed != 1 {
         return Err("套盒状态已变化，请刷新后重试".to_string());
     }

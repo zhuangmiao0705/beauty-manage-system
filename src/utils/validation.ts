@@ -33,3 +33,14 @@ export function positiveNumberRule(message: string): FormItemRule {
     }
   }
 }
+
+export function nonNegativeNumberRule(message: string): FormItemRule {
+  return {
+    required: true,
+    trigger: ['blur', 'change'],
+    validator: (_rule: unknown, value: unknown, callback: RuleCallback) => {
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) callback()
+      else callback(new Error(message))
+    }
+  }
+}
