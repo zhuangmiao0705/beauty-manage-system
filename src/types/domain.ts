@@ -149,6 +149,7 @@ export interface PackagePurchase {
   remainingUses: number
   limitType: PackageLimitType
   validityDays: number
+  activatedAt: string | null
   expiresAt: string | null
   paymentMethod: PackagePaymentMethod
   balancePaymentAmount: number
@@ -297,6 +298,7 @@ export interface PackagePurchaseInput {
   memberId: string
   packageId: string
   employee: string
+  activatedAt: string
   paymentMethod: PackagePaymentMethod
   balancePaymentAmount: number
   cashPaymentAmount: number

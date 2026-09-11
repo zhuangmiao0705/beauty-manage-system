@@ -115,10 +115,12 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
     purchase.packageType ??= packageDefinition?.packageType ?? '套盒'
     purchase.limitType ??= packageDefinition?.limitType ?? 'count'
     purchase.validityDays ??= packageDefinition?.validityDays ?? 0
+    purchase.activatedAt ??= purchase.purchasedAt
     purchase.expiresAt ??=
       purchase.limitType === 'time' && purchase.validityDays > 0
         ? new Date(
-            new Date(purchase.purchasedAt).getTime() + purchase.validityDays * 86_400_000
+            new Date(purchase.activatedAt ?? purchase.purchasedAt).getTime() +
+              purchase.validityDays * 86_400_000
           ).toISOString()
         : null
     if (
@@ -404,10 +406,15 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
   if (member.principalBalance < balancePaymentAmount)
     throw new Error('实付本金余额不足，赠送余额不可购买套餐')
 
-  const now = new Date().toISOString()
+  const nowValue = new Date()
+  const now = nowValue.toISOString()
+  const activatedAtValue = new Date(input.activatedAt)
+  if (Number.isNaN(activatedAtValue.getTime()) || activatedAtValue.getTime() > nowValue.getTime())
+    throw new Error('开卡时间无效或晚于当前时间')
+  const activatedAt = activatedAtValue.toISOString()
   const expiresAt =
     packageItem.limitType === 'time'
-      ? new Date(Date.now() + packageItem.validityDays * 86_400_000).toISOString()
+      ? new Date(activatedAtValue.getTime() + packageItem.validityDays * 86_400_000).toISOString()
       : null
   const transactionId = packageItem.price > 0 ? crypto.randomUUID() : ''
   const purchaseId = crypto.randomUUID()
@@ -450,6 +457,7 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     remainingUses: packageItem.totalUses,
     limitType: packageItem.limitType,
     validityDays: packageItem.validityDays,
+    activatedAt,
     expiresAt,
     paymentMethod: input.paymentMethod,
     balancePaymentAmount,
@@ -461,7 +469,8 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     commissionRuleVersion: PACKAGE_COMMISSION_RULE_VERSION,
     purchasedAt: now,
     lastConsumedAt: null,
-    status: 'active',
+    status:
+      expiresAt && new Date(expiresAt).getTime() <= nowValue.getTime() ? 'completed' : 'active',
     transactionId
   })
 }

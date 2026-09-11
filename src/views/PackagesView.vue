@@ -50,6 +50,7 @@ const purchaseForm = reactive<PackagePurchaseInput>({
   memberId: '',
   packageId: '',
   employee: '',
+  activatedAt: '',
   paymentMethod: '会员余额',
   balancePaymentAmount: 0,
   cashPaymentAmount: 0
@@ -64,6 +65,19 @@ const purchaseRules = computed<FormRules<PackagePurchaseInput>>(() => ({
   memberId: [{ required: true, message: '请选择会员', trigger: 'change' }],
   packageId: [{ required: true, message: '请选择套餐种类', trigger: 'change' }],
   employee: [{ required: true, message: '请选择销售员工', trigger: 'change' }],
+  activatedAt: [
+    { required: true, message: '请选择开卡时间', trigger: 'change' },
+    {
+      trigger: 'change',
+      validator: (_rule, value, callback) => {
+        const activatedAt = new Date(String(value).replace(' ', 'T'))
+        if (Number.isNaN(activatedAt.getTime())) return callback(new Error('开卡时间无效'))
+        if (activatedAt.getTime() > Date.now())
+          return callback(new Error('开卡时间不能晚于当前时间'))
+        callback()
+      }
+    }
+  ],
   paymentMethod: [{ required: true, message: '请选择支付方式', trigger: 'change' }],
   balancePaymentAmount: [
     {
@@ -121,6 +135,17 @@ const selectedPackage = computed(() =>
 const selectedMember = computed(() =>
   salonStore.members.find(item => item.id === purchaseForm.memberId)
 )
+const timePackagePreview = computed(() => {
+  if (selectedPackage.value?.limitType !== 'time' || !purchaseForm.activatedAt) return null
+  const activatedAt = new Date(purchaseForm.activatedAt.replace(' ', 'T'))
+  if (Number.isNaN(activatedAt.getTime())) return null
+  const elapsedDays = Math.max(0, Math.floor((Date.now() - activatedAt.getTime()) / 86_400_000))
+  const expiresAt = new Date(
+    activatedAt.getTime() + selectedPackage.value.validityDays * 86_400_000
+  )
+  const remainingDays = Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / 86_400_000))
+  return { elapsedDays, expiresAt, remainingDays }
+})
 
 watch(
   () => [purchaseForm.paymentMethod, purchaseForm.packageId, purchaseForm.balancePaymentAmount],
@@ -175,6 +200,20 @@ function memberPhone(memberId: string) {
   return salonStore.members.find(item => item.id === memberId)?.phone ?? ''
 }
 
+function pad(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function localDateTimeValue(value = new Date()) {
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:00`
+}
+
+function disabledFutureDate(date: Date) {
+  const tomorrow = new Date()
+  tomorrow.setHours(24, 0, 0, 0)
+  return date.getTime() >= tomorrow.getTime()
+}
+
 function queryPurchases() {
   Object.assign(appliedPurchaseFilters, purchaseFilterForm)
 }
@@ -195,6 +234,7 @@ function openPurchase() {
     memberId: '',
     packageId: '',
     employee: '',
+    activatedAt: localDateTimeValue(),
     paymentMethod: '会员余额',
     balancePaymentAmount: 0,
     cashPaymentAmount: 0
@@ -217,7 +257,10 @@ async function submitPurchase() {
   if (!(await validateForm(purchaseFormRef.value))) return
   saving.value = true
   try {
-    await purchasePackage({ ...purchaseForm })
+    await purchasePackage({
+      ...purchaseForm,
+      activatedAt: new Date(purchaseForm.activatedAt.replace(' ', 'T')).toISOString()
+    })
     modal.value = null
     notify('套餐购买记录已保存')
   } catch (reason) {
@@ -360,6 +403,11 @@ async function submitConsumption() {
             {{ packagePurchaseLimitText(row as PackagePurchase) }}
           </template>
         </el-table-column>
+        <el-table-column label="开卡时间" min-width="165">
+          <template #default="{ row }">
+            {{ row.activatedAt ? fullDateTime(row.activatedAt) : '--' }}
+          </template>
+        </el-table-column>
         <el-table-column label="最近消耗时间" min-width="165">
           <template #default="{ row }">
             {{ row.lastConsumedAt ? fullDateTime(row.lastConsumedAt) : '--' }}
@@ -428,6 +476,16 @@ async function submitConsumption() {
           <el-form-item label="销售员工" prop="employee">
             <EmployeeSelect v-model="purchaseForm.employee" />
           </el-form-item>
+          <el-form-item label="开卡时间" prop="activatedAt">
+            <el-date-picker
+              v-model="purchaseForm.activatedAt"
+              type="datetime"
+              format="YYYY-MM-DD HH:mm"
+              value-format="YYYY-MM-DD HH:mm:ss"
+              :disabled-date="disabledFutureDate"
+              placeholder="请选择开卡时间"
+            />
+          </el-form-item>
           <el-form-item label="支付方式" prop="paymentMethod">
             <el-select v-model="purchaseForm.paymentMethod">
               <el-option
@@ -467,6 +525,11 @@ async function submitConsumption() {
             : `共 ${selectedPackage.totalUses} 次`
         }}；可用实付本金余额
         {{ currency(selectedMember.principalBalance) }}。赠送余额不可用于购买套餐。
+        <template v-if="timePackagePreview">
+          开卡后已过 {{ timePackagePreview.elapsedDays }} 天，预计剩余
+          {{ timePackagePreview.remainingDays }} 天，有效至
+          {{ fullDateTime(timePackagePreview.expiresAt.toISOString()) }}。
+        </template>
       </div>
       <template #footer>
         <el-button @click="modal = null">取消</el-button>

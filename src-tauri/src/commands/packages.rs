@@ -282,10 +282,24 @@ pub(crate) fn purchase_package(
     let balance_after = round_money(principal_balance_after + gift_balance);
     let now_value = Utc::now();
     let now = now_value.to_rfc3339();
+    let activated_at = DateTime::parse_from_rfc3339(&input.activated_at)
+        .map(|date| date.with_timezone(&Utc))
+        .map_err(|_| "开卡时间格式无效".to_string())?;
+    if activated_at > now_value {
+        return Err("开卡时间不能晚于当前时间".to_string());
+    }
     let expires_at = if limit_type == "time" {
-        Some((now_value + Duration::days(validity_days)).to_rfc3339())
+        Some((activated_at + Duration::days(validity_days)).to_rfc3339())
     } else {
         None
+    };
+    let purchase_status = if expires_at
+        .as_deref()
+        .is_some_and(|value| !time_package_is_active(Some(value), now_value))
+    {
+        "completed"
+    } else {
+        "active"
     };
     let purchase_id = Uuid::new_v4().to_string();
     let transaction_id = if price > 0.0 {
@@ -310,11 +324,11 @@ pub(crate) fn purchase_package(
         .execute(
             "INSERT INTO package_purchases
              (id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,
-              remaining_uses,limit_type,validity_days,expires_at,payment_method,
+              remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,
               balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,
               commission,commission_rule_version,transaction_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,?14,?15,
-                     'active',?16,NULL,?17,3,?18)",
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,?14,?15,?16,
+                     ?17,?18,NULL,?19,3,?20)",
             params![
                 purchase_id,
                 input.member_id,
@@ -327,10 +341,12 @@ pub(crate) fn purchase_package(
                 total_uses,
                 limit_type,
                 validity_days,
+                activated_at.to_rfc3339(),
                 expires_at,
                 input.payment_method,
                 balance_payment_amount,
                 cash_payment_amount,
+                purchase_status,
                 now,
                 round_money(cash_payment_amount * compensation.base_commission_rate),
                 transaction_id

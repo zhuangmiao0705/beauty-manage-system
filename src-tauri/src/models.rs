@@ -213,6 +213,7 @@ pub(crate) struct PackagePurchase {
     pub(crate) remaining_uses: i64,
     pub(crate) limit_type: String,
     pub(crate) validity_days: i64,
+    pub(crate) activated_at: Option<String>,
     pub(crate) expires_at: Option<String>,
     pub(crate) payment_method: String,
     pub(crate) balance_payment_amount: f64,
@@ -388,6 +389,8 @@ pub(crate) struct PackagePurchaseInput {
     pub(crate) member_id: String,
     pub(crate) employee: String,
     pub(crate) package_id: String,
+    #[serde(default)]
+    pub(crate) activated_at: String,
     pub(crate) payment_method: String,
     #[serde(default)]
     pub(crate) balance_payment_amount: f64,

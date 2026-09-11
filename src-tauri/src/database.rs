@@ -341,6 +341,7 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                remaining_uses INTEGER NOT NULL CHECK(remaining_uses>=0),
                limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time')),
                validity_days INTEGER NOT NULL DEFAULT 0 CHECK(validity_days>=0),
+               activated_at TEXT,
                expires_at TEXT,
                payment_method TEXT NOT NULL CHECK(payment_method IN ('会员余额','现金','余额现金组合支付')),
                balance_payment_amount REAL NOT NULL DEFAULT 0 CHECK(balance_payment_amount>=0),
@@ -1162,6 +1163,51 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
     }
+    add_column(connection, "package_purchases", "activated_at TEXT")?;
+    let package_activation_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=12",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if package_activation_migration_applied == 0 {
+        connection
+            .execute(
+                "UPDATE package_purchases SET activated_at=purchased_at
+                 WHERE activated_at IS NULL",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (12,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let count_package_activation_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=13",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if count_package_activation_migration_applied == 0 {
+        connection
+            .execute(
+                "UPDATE package_purchases SET activated_at=purchased_at
+                 WHERE activated_at IS NULL",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (13,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
 
     connection
         .execute(
@@ -1505,7 +1551,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let package_purchases = {
-        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,remaining_uses,limit_type,validity_days,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackagePurchase {
@@ -1521,25 +1567,26 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     remaining_uses: row.get(9)?,
                     limit_type: row.get(10)?,
                     validity_days: row.get(11)?,
-                    expires_at: row.get(12)?,
-                    payment_method: row.get(13)?,
-                    balance_payment_amount: row.get(14)?,
-                    cash_payment_amount: row.get(15)?,
-                    status: if row.get::<_, String>(16)? == "active"
+                    activated_at: row.get(12)?,
+                    expires_at: row.get(13)?,
+                    payment_method: row.get(14)?,
+                    balance_payment_amount: row.get(15)?,
+                    cash_payment_amount: row.get(16)?,
+                    status: if row.get::<_, String>(17)? == "active"
                         && row.get::<_, String>(10)? == "time"
                         && row
-                            .get::<_, Option<String>>(12)?
+                            .get::<_, Option<String>>(13)?
                             .is_some_and(|expires_at| expires_at <= Utc::now().to_rfc3339())
                     {
                         "completed".to_string()
                     } else {
-                        row.get(16)?
+                        row.get(17)?
                     },
-                    purchased_at: row.get(17)?,
-                    last_consumed_at: row.get(18)?,
-                    commission: row.get(19)?,
-                    commission_rule_version: row.get(20)?,
-                    transaction_id: row.get(21)?,
+                    purchased_at: row.get(18)?,
+                    last_consumed_at: row.get(19)?,
+                    commission: row.get(20)?,
+                    commission_rule_version: row.get(21)?,
+                    transaction_id: row.get(22)?,
                 })
             })
             .map_err(|e| e.to_string())?;
