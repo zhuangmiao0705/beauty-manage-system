@@ -10,8 +10,10 @@ import MemberSelect from '../components/MemberSelect.vue'
 import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
 import { PACKAGE_PAYMENT_METHODS, PACKAGE_TYPES } from '../config/options'
-import { consumePackage, purchasePackage, salonStore } from '../data/repository'
+import { authStore } from '../auth'
+import { cancelService, consumePackage, purchasePackage, salonStore } from '../data/repository'
 import type {
+  PackageConsumption,
   PackageConsumptionInput,
   PackagePurchase,
   PackagePurchaseInput,
@@ -292,6 +294,27 @@ async function submitConsumption() {
     notify(errorMessage(reason, '消耗失败'), 'error')
   } finally {
     saving.value = false
+  }
+}
+
+async function cancelConsumption(consumption: PackageConsumption) {
+  if (!selectedPurchase.value || consumption.status !== 'active') return
+  const appointment = salonStore.appointments.find(
+    item => item.completedServiceId === consumption.serviceId
+  )
+  const consequence =
+    selectedPurchase.value.limitType === 'count' ? '套餐剩余次数将恢复1次' : '套餐有效期不变'
+  try {
+    await ElMessageBox.confirm(
+      `撤销后${consequence}，并撤销对应的服务及提成记录。${appointment ? '关联预约将恢复为服务中状态。' : ''}确认继续吗？`,
+      '确认撤销套餐消耗',
+      { type: 'warning', confirmButtonText: '确认撤销', cancelButtonText: '取消' }
+    )
+    await cancelService(consumption.serviceId)
+    notify('套餐消耗已撤销')
+  } catch (reason) {
+    if (reason === 'cancel' || reason === 'close') return
+    notify(errorMessage(reason, '撤销失败'), 'error')
   }
 }
 </script>
@@ -609,7 +632,32 @@ async function submitConsumption() {
             {{ selectedPurchase.limitType === 'time' ? '有效期内' : `${row.remainingAfter}次` }}
           </template>
         </el-table-column>
+        <el-table-column label="状态" min-width="90">
+          <template #default="{ row }">
+            <el-tag round :type="row.status === 'active' ? 'success' : 'info'">
+              {{ row.status === 'active' ? '有效' : '已撤销' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="note" label="备注" min-width="160" show-overflow-tooltip />
+        <el-table-column
+          v-if="authStore.user?.role === 'manager'"
+          label="操作"
+          width="95"
+          fixed="right"
+        >
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              :disabled="row.status !== 'active'"
+              @click="cancelConsumption(row as PackageConsumption)"
+            >
+              撤销
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
       <TablePagination
         v-model="flowPage"

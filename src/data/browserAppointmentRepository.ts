@@ -205,7 +205,9 @@ export function completeBrowserAppointment(
       remainingAfter,
       createdAt: now,
       note: '预约服务完成',
-      serviceId
+      serviceId,
+      status: 'active',
+      cancelledAt: null
     })
   } else {
     const project = snapshot.projects.find(item => item.id === appointment.projectId)

@@ -237,6 +237,8 @@ pub(crate) struct PackageConsumption {
     pub(crate) created_at: String,
     pub(crate) note: String,
     pub(crate) service_id: String,
+    pub(crate) status: String,
+    pub(crate) cancelled_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

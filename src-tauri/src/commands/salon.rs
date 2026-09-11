@@ -7,7 +7,7 @@ use crate::{
     models::{AppSnapshot, EmployeeInput, MemberInput, ServiceInput, TransactionInput},
     state::DatabaseState,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Transaction};
 use uuid::Uuid;
 
@@ -378,17 +378,27 @@ pub(crate) fn cancel_service(
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    let (member_id, amount, gift_deduction, principal_deduction, transaction_id): (
+    let (
+        member_id,
+        amount,
+        gift_deduction,
+        principal_deduction,
+        transaction_id,
+        service_type,
+        package_purchase_id,
+    ): (
         Option<String>,
         f64,
         f64,
         f64,
+        Option<String>,
         String,
+        Option<String>,
     ) = transaction
         .query_row(
-            "SELECT member_id,amount,gift_deduction,principal_deduction,transaction_id
-             FROM services WHERE id=?1 AND service_type='普通手工' AND status='completed'
-               AND transaction_id IS NOT NULL",
+            "SELECT member_id,amount,gift_deduction,principal_deduction,transaction_id,
+                    service_type,package_purchase_id
+             FROM services WHERE id=?1 AND status='completed'",
             params![service_id],
             |row| {
                 Ok((
@@ -397,46 +407,126 @@ pub(crate) fn cancel_service(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
         .map_err(|_| "该服务不存在、已撤销或不支持撤销".to_string())?;
-    if let Some(member_id) = member_id {
-        let (principal_balance, gift_balance, total_consumption): (f64, f64, f64) = transaction
+    let now = Utc::now().to_rfc3339();
+    if let Some(package_purchase_id) = package_purchase_id {
+        let consumption_id: String = transaction
             .query_row(
-                "SELECT principal_balance,gift_balance,total_consumption FROM members WHERE id=?1",
-                params![member_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                "SELECT id FROM package_consumptions
+                 WHERE service_id=?1 AND package_purchase_id=?2 AND status='active'",
+                params![service_id, package_purchase_id],
+                |row| row.get(0),
             )
-            .map_err(|_| "会员不存在，无法撤销".to_string())?;
-        let principal_after = round_money(principal_balance + principal_deduction);
-        let gift_after = round_money(gift_balance + gift_deduction);
+            .map_err(|_| "对应的套餐消耗流水不存在或已撤销".to_string())?;
+        let (limit_type, remaining_uses, total_uses, expires_at): (
+            String,
+            i64,
+            i64,
+            Option<String>,
+        ) = transaction
+            .query_row(
+                "SELECT limit_type,remaining_uses,total_uses,expires_at
+                 FROM package_purchases WHERE id=?1",
+                params![package_purchase_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|_| "套餐购买记录不存在".to_string())?;
+        let changed = transaction
+            .execute(
+                "UPDATE package_consumptions SET status='cancelled',cancelled_at=?1
+                 WHERE id=?2 AND status='active'",
+                params![now, consumption_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed != 1 {
+            return Err("该套餐消耗已撤销，请刷新后重试".to_string());
+        }
+        let last_consumed_at: Option<String> = transaction
+            .query_row(
+                "SELECT MAX(consumed_at) FROM package_consumptions
+                 WHERE package_purchase_id=?1 AND status='active'",
+                params![package_purchase_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let (restored_uses, package_status) = if limit_type == "count" {
+            ((remaining_uses + 1).min(total_uses), "active")
+        } else {
+            let is_active = expires_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|value| value.with_timezone(&Utc) > Utc::now());
+            (
+                remaining_uses,
+                if is_active { "active" } else { "completed" },
+            )
+        };
         transaction
             .execute(
-                "UPDATE members SET principal_balance=?1,gift_balance=?2,balance=?3,
-                 total_consumption=?4 WHERE id=?5",
+                "UPDATE package_purchases
+                 SET remaining_uses=?1,last_consumed_at=?2,status=?3 WHERE id=?4",
                 params![
-                    principal_after,
-                    gift_after,
-                    round_money(principal_after + gift_after),
-                    round_money((total_consumption - amount).max(0.0)),
-                    member_id
+                    restored_uses,
+                    last_consumed_at,
+                    package_status,
+                    package_purchase_id
                 ],
             )
             .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE appointments SET status='in_service',completed_service_id=NULL,updated_at=?1
+                 WHERE completed_service_id=?2 AND status='completed'",
+                params![now, service_id],
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        let transaction_id = transaction_id.filter(|value| !value.is_empty());
+        if service_type != "普通手工" || transaction_id.is_none() {
+            return Err("该服务不支持撤销".to_string());
+        }
+        if let Some(member_id) = member_id {
+            let (principal_balance, gift_balance, total_consumption): (f64, f64, f64) =
+                transaction
+                    .query_row(
+                        "SELECT principal_balance,gift_balance,total_consumption FROM members WHERE id=?1",
+                        params![member_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(|_| "会员不存在，无法撤销".to_string())?;
+            let principal_after = round_money(principal_balance + principal_deduction);
+            let gift_after = round_money(gift_balance + gift_deduction);
+            transaction
+                .execute(
+                    "UPDATE members SET principal_balance=?1,gift_balance=?2,balance=?3,
+                     total_consumption=?4 WHERE id=?5",
+                    params![
+                        principal_after,
+                        gift_after,
+                        round_money(principal_after + gift_after),
+                        round_money((total_consumption - amount).max(0.0)),
+                        member_id
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction
+            .execute(
+                "UPDATE transactions SET status='cancelled',note=note||'；服务已撤销'
+                 WHERE id=?1 AND status='active'",
+                params![transaction_id],
+            )
+            .map_err(|error| error.to_string())?;
     }
-    let now = Utc::now().to_rfc3339();
     transaction
         .execute(
             "UPDATE services SET status='cancelled',cancelled_at=?1 WHERE id=?2",
             params![now, service_id],
-        )
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute(
-            "UPDATE transactions SET status='cancelled',note=note||'；服务已撤销'
-             WHERE id=?1 AND status='active'",
-            params![transaction_id],
         )
         .map_err(|error| error.to_string())?;
     transaction.commit().map_err(|error| error.to_string())?;

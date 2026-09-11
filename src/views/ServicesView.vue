@@ -12,7 +12,7 @@ import { useTablePagination } from '../composables/useTablePagination'
 import { authStore } from '../auth'
 import { RECHARGE_PAYMENT_METHODS, SERVICE_TYPE_LABELS, SERVICE_TYPES } from '../config/options'
 import { addService, cancelService, salonStore } from '../data/repository'
-import type { ExternalPaymentMethod, ServiceInput, ServiceType } from '../types'
+import type { ExternalPaymentMethod, ServiceInput, ServiceRecord, ServiceType } from '../types'
 import { currency, dateTime, isToday, localDateKey } from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
 import { validateForm } from '../utils/validation'
@@ -212,15 +212,21 @@ async function submit() {
   }
 }
 
-async function cancelRecord(serviceId: string) {
+async function cancelRecord(service: ServiceRecord) {
+  const isPackageService = !!service.packagePurchaseId
+  const linkedAppointment = isPackageService
+    ? salonStore.appointments.find(item => item.completedServiceId === service.id)
+    : null
   try {
     await ElMessageBox.confirm(
-      '撤销后将冲减消费营业额，并按原扣款拆分退回会员赠送余额和本金余额。确认继续吗？',
+      isPackageService
+        ? `撤销后将恢复套餐消耗，并撤销本次服务及提成记录。${linkedAppointment ? '关联预约将恢复为服务中状态。' : ''}确认继续吗？`
+        : '撤销后将冲减消费营业额，并按原扣款拆分退回会员赠送余额和本金余额。确认继续吗？',
       '确认撤销服务',
       { type: 'warning', confirmButtonText: '确认撤销', cancelButtonText: '取消' }
     )
-    await cancelService(serviceId)
-    notify('服务已撤销，相关余额和营业额已恢复')
+    await cancelService(service.id)
+    notify(isPackageService ? '套餐消耗已撤销' : '服务已撤销，相关余额和营业额已恢复')
   } catch (reason) {
     if (reason === 'cancel' || reason === 'close') return
     notify(errorMessage(reason, '撤销失败'), 'error')
@@ -410,8 +416,10 @@ async function cancelRecord(serviceId: string) {
               size="small"
               type="danger"
               plain
-              :disabled="row.status !== 'completed' || !row.transactionId"
-              @click="cancelRecord(row.id)"
+              :disabled="
+                row.status !== 'completed' || (!row.packagePurchaseId && !row.transactionId)
+              "
+              @click="cancelRecord(row as ServiceRecord)"
             >
               撤销
             </el-button>

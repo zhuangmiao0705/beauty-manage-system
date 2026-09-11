@@ -133,6 +133,11 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
     purchase.cashPaymentAmount ??= purchase.paymentMethod === '现金' ? purchase.price : 0
   })
 
+  snapshot.packageConsumptions.forEach(consumption => {
+    consumption.status ??= 'active'
+    consumption.cancelledAt ??= null
+  })
+
   snapshot.packages.forEach(item => {
     item.packageType ??= '套盒'
     item.limitType ??= 'count'
@@ -517,7 +522,9 @@ export function consumeBrowserPackage(snapshot: AppSnapshot, input: PackageConsu
     remainingAfter: purchase.remainingUses,
     createdAt: now,
     note: input.note.trim(),
-    serviceId
+    serviceId,
+    status: 'active',
+    cancelledAt: null
   })
   const member = snapshot.members.find(item => item.id === purchase.memberId)
   if (member) member.lastVisit = now

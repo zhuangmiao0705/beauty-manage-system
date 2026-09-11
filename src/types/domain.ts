@@ -171,6 +171,8 @@ export interface PackageConsumption {
   createdAt: string
   note: string
   serviceId: string
+  status: 'active' | 'cancelled'
+  cancelledAt: string | null
 }
 
 export interface Appointment {

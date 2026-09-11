@@ -366,7 +366,9 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                commission REAL NOT NULL DEFAULT 0,
                service_id TEXT NOT NULL REFERENCES services(id),
                duration INTEGER NOT NULL DEFAULT 60,
-               note TEXT NOT NULL DEFAULT ''
+               note TEXT NOT NULL DEFAULT '',
+               status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled')),
+               cancelled_at TEXT
              );
 
              CREATE INDEX IF NOT EXISTS idx_transactions_member ON transactions(member_id);
@@ -1208,6 +1210,27 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
     }
+    add_column(
+        connection,
+        "package_consumptions",
+        "status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled'))",
+    )?;
+    add_column(connection, "package_consumptions", "cancelled_at TEXT")?;
+    let package_consumption_cancellation_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=14",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if package_consumption_cancellation_migration_applied == 0 {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (14,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
 
     connection
         .execute(
@@ -1594,7 +1617,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let package_consumptions = {
-        let mut statement = connection.prepare("SELECT id,package_purchase_id,employee,duration,remaining_after,consumed_at,note,service_id FROM package_consumptions ORDER BY consumed_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,package_purchase_id,employee,duration,remaining_after,consumed_at,note,service_id,status,cancelled_at FROM package_consumptions ORDER BY consumed_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackageConsumption {
@@ -1606,6 +1629,8 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     created_at: row.get(5)?,
                     note: row.get(6)?,
                     service_id: row.get(7)?,
+                    status: row.get(8)?,
+                    cancelled_at: row.get(9)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1812,6 +1837,8 @@ mod tests {
         assert_eq!(data.package_purchases[0].commission, 0.0);
         assert_eq!(data.package_purchases[0].commission_rule_version, 3);
         assert_eq!(data.package_consumptions.len(), 1);
+        assert_eq!(data.package_consumptions[0].status, "active");
+        assert_eq!(data.package_consumptions[0].cancelled_at, None);
         let foreign_key_errors: i64 = connection
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
                 row.get(0)

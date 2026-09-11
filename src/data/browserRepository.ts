@@ -201,10 +201,45 @@ export function cancelBrowserService(state: AppSnapshot, serviceId: string) {
     item =>
       item.id === serviceId &&
       item.status === 'completed' &&
-      item.serviceType === '普通手工' &&
-      item.transactionId
+      ((item.packagePurchaseId &&
+        state.packageConsumptions.some(
+          consumption => consumption.serviceId === item.id && consumption.status === 'active'
+        )) ||
+        (item.serviceType === '普通手工' && item.transactionId))
   )
   if (!service) throw new Error('该服务不存在、已撤销或不支持撤销')
+  const now = new Date().toISOString()
+  if (service.packagePurchaseId) {
+    const consumption = state.packageConsumptions.find(
+      item => item.serviceId === service.id && item.status === 'active'
+    )
+    const purchase = state.packagePurchases.find(item => item.id === service.packagePurchaseId)
+    if (!consumption || !purchase) throw new Error('套餐消耗流水或购买记录不存在')
+
+    consumption.status = 'cancelled'
+    consumption.cancelledAt = now
+    if (purchase.limitType === 'count') {
+      purchase.remainingUses = Math.min(purchase.totalUses, purchase.remainingUses + 1)
+      purchase.status = 'active'
+    } else {
+      purchase.status =
+        purchase.expiresAt && new Date(purchase.expiresAt).getTime() > Date.now()
+          ? 'active'
+          : 'completed'
+    }
+    purchase.lastConsumedAt =
+      state.packageConsumptions
+        .filter(item => item.purchaseId === purchase.id && item.status === 'active')
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.createdAt ?? null
+    const appointment = state.appointments.find(item => item.completedServiceId === service.id)
+    if (appointment) {
+      appointment.status = 'in_service'
+      appointment.completedServiceId = null
+      appointment.updatedAt = now
+    }
+    service.status = 'cancelled'
+    return
+  }
   const member = service.memberId
     ? state.members.find(item => item.id === service.memberId)
     : undefined
