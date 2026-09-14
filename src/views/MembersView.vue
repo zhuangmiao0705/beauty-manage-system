@@ -1,15 +1,26 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import 'element-plus/es/components/message-box/style/css'
 import type { FormInstance, FormItemRule, FormRules } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
-import { CircleDollarSign, Eye, Plus, Search, UserPlus, WalletCards } from 'lucide-vue-next'
+import {
+  CircleDollarSign,
+  Eye,
+  Plus,
+  RotateCcw,
+  Search,
+  UserPlus,
+  WalletCards
+} from 'lucide-vue-next'
 import BaseModal from '../components/BaseModal.vue'
 import EmployeeSelect from '../components/EmployeeSelect.vue'
 import MemberSelect from '../components/MemberSelect.vue'
 import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
 import { RECHARGE_PAYMENT_METHODS } from '../config/options'
-import { addMember, addTransaction, salonStore } from '../data/repository'
+import { authStore } from '../auth'
+import { addMember, addTransaction, refundMemberAccount, salonStore } from '../data/repository'
 import type { Member, MemberInput, TransactionInput } from '../types'
 import { currency, dateOnly, dateTime, fullDateTime } from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
@@ -17,10 +28,16 @@ import { positiveNumberRule, requiredTextRule, validateForm } from '../utils/val
 
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref(route.query.tab === 'transactions' ? 'transactions' : 'members')
+const activeTab = ref(
+  route.query.tab === 'transactions'
+    ? 'transactions'
+    : route.query.tab === 'refunds'
+      ? 'refunds'
+      : 'members'
+)
 const memberFilters = reactive({ name: '', phone: '' })
 const transactionFilters = reactive({ memberName: '', item: '', note: '', employee: '' })
-const modal = ref<'member' | 'transaction' | 'detail' | null>(null)
+const modal = ref<'member' | 'transaction' | 'detail' | 'accountRefund' | null>(null)
 const selectedMember = ref<Member | null>(null)
 const saving = ref(false)
 const memberFormRef = ref<FormInstance>()
@@ -42,6 +59,7 @@ const transactionForm = reactive<TransactionInput>({
   employee: '',
   note: ''
 })
+const accountRefundForm = reactive({ note: '' })
 const memberGiftRule: FormItemRule = {
   trigger: 'change',
   validator: (_rule, value, callback) => {
@@ -92,6 +110,21 @@ const filteredTransactions = computed(() =>
     )
   })
 )
+const filteredRefunds = computed(() =>
+  salonStore.refundRecords.filter(item => {
+    const memberName = transactionFilters.memberName.trim()
+    const transactionItem = transactionFilters.item.trim()
+    const note = transactionFilters.note.trim()
+    const employee = transactionFilters.employee.trim()
+    const itemName = item.refundType === 'account' ? '账户退款' : '套餐退款'
+    return (
+      (!memberName || item.memberName.includes(memberName)) &&
+      (!transactionItem || itemName.includes(transactionItem)) &&
+      (!note || item.note.includes(note)) &&
+      (!employee || item.employee.includes(employee) || item.operator.includes(employee))
+    )
+  })
+)
 const memberPhoneById = computed(
   () => new Map(salonStore.members.map(member => [member.id, member.phone]))
 )
@@ -105,8 +138,16 @@ const {
   pageSize: transactionPageSize,
   paginatedRecords: paginatedTransactions
 } = useTablePagination(filteredTransactions)
+const {
+  currentPage: refundPage,
+  pageSize: refundPageSize,
+  paginatedRecords: paginatedRefunds
+} = useTablePagination(filteredRefunds)
 const detailTransactions = computed(() =>
   salonStore.transactions.filter(item => item.memberId === selectedMember.value?.id)
+)
+const detailRefunds = computed(() =>
+  salonStore.refundRecords.filter(item => item.memberId === selectedMember.value?.id)
 )
 function transactionMemberPhone(memberId: string | null) {
   return memberId ? (memberPhoneById.value.get(memberId) ?? '') : ''
@@ -138,6 +179,11 @@ const openDetail = (member: Member) => {
   selectedMember.value = member
   modal.value = 'detail'
 }
+const openAccountRefund = (member: Member) => {
+  selectedMember.value = member
+  accountRefundForm.note = ''
+  modal.value = 'accountRefund'
+}
 
 watch(
   () => route.query.action,
@@ -148,9 +194,7 @@ watch(
   { immediate: true }
 )
 
-watch(activeTab, value =>
-  router.replace({ query: value === 'transactions' ? { tab: 'transactions' } : {} })
-)
+watch(activeTab, value => router.replace({ query: value === 'members' ? {} : { tab: value } }))
 
 async function submitMember() {
   if (!(await validateForm(memberFormRef.value))) return
@@ -179,6 +223,40 @@ async function submitTransaction() {
     saving.value = false
   }
 }
+
+async function submitAccountRefund() {
+  const member = selectedMember.value
+  if (!member) return
+  const refundAmount = member.refundablePrincipal
+  const consumedGiftOffset = Math.max(0, member.principalBalance - refundAmount)
+  const message = [
+    `确认退还本金 ${currency(refundAmount)} 吗？`,
+    consumedGiftOffset > 0 ? `已消费赠送金额将从本金中扣除 ${currency(consumedGiftOffset)}。` : '',
+    member.giftBalance > 0 ? `同时清除赠送余额 ${currency(member.giftBalance)}。` : '',
+    '退款后账户余额为 ¥0.00，会员资料和历史记录仍会保留，此操作不可撤销。'
+  ]
+    .filter(Boolean)
+    .join('\n')
+  try {
+    await ElMessageBox.confirm(message, '二次确认账户退款', {
+      type: 'warning',
+      confirmButtonText: `确认退款 ${currency(refundAmount)}`,
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    await refundMemberAccount({ memberId: member.id, note: accountRefundForm.note })
+    modal.value = null
+    notify(`账户退款已登记，本次退款 ${currency(refundAmount)}`)
+  } catch (reason) {
+    notify(errorMessage(reason, '账户退款失败'), 'error')
+  } finally {
+    saving.value = false
+  }
+}
 </script>
 
 <template>
@@ -187,6 +265,7 @@ async function submitTransaction() {
       <el-radio-group v-model="activeTab" class="salon-radio-group">
         <el-radio-button value="members">会员档案</el-radio-button>
         <el-radio-button value="transactions">资金流水</el-radio-button>
+        <el-radio-button value="refunds">退款记录</el-radio-button>
       </el-radio-group>
       <div class="toolbar-actions">
         <el-button @click="openTransaction()">
@@ -340,7 +419,7 @@ async function submitTransaction() {
         <el-table-column label="最近到店" min-width="165">
           <template #default="{ row: member }">{{ fullDateTime(member.lastVisit) }}</template>
         </el-table-column>
-        <el-table-column label="操作" min-width="132" fixed="right">
+        <el-table-column label="操作" min-width="176" fixed="right">
           <template #default="{ row: member }">
             <div class="element-row-actions">
               <el-tooltip content="查看详情">
@@ -353,11 +432,29 @@ async function submitTransaction() {
                   <WalletCards :size="15" />
                 </el-button>
               </el-tooltip>
+              <el-tooltip v-if="authStore.user?.role === 'manager'" content="账户退款">
+                <el-button
+                  circle
+                  size="small"
+                  type="danger"
+                  plain
+                  :disabled="member.principalBalance <= 0 && member.giftBalance <= 0"
+                  @click="openAccountRefund(member as Member)"
+                >
+                  <RotateCcw :size="15" />
+                </el-button>
+              </el-tooltip>
             </div>
           </template>
         </el-table-column>
       </el-table>
-      <el-table v-else :data="paginatedTransactions" row-key="id" stripe class="salon-table">
+      <el-table
+        v-else-if="activeTab === 'transactions'"
+        :data="paginatedTransactions"
+        row-key="id"
+        stripe
+        class="salon-table"
+      >
         <el-table-column label="流水时间" min-width="130">
           <template #default="{ row }">{{ dateTime(row.createdAt) }}</template>
         </el-table-column>
@@ -403,6 +500,47 @@ async function submitTransaction() {
           <template #default="{ row }">{{ currency(row.balanceAfter) }}</template>
         </el-table-column>
       </el-table>
+      <el-table v-else :data="paginatedRefunds" row-key="id" stripe class="salon-table">
+        <el-table-column label="退款时间" min-width="145">
+          <template #default="{ row }">{{ dateTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="会员" min-width="140">
+          <template #default="{ row }">
+            <div>{{ row.memberName }}</div>
+            <div v-if="transactionMemberPhone(row.memberId)" class="service-customer-phone">
+              {{ transactionMemberPhone(row.memberId) }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" min-width="100">
+          <template #default="{ row }">
+            <el-tag round type="danger">
+              {{ row.refundType === 'account' ? '账户退款' : '套餐退款' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="退款金额" min-width="115">
+          <template #default="{ row }">
+            <strong class="consume">-{{ currency(row.amount) }}</strong>
+          </template>
+        </el-table-column>
+        <el-table-column label="退回本金余额" min-width="125">
+          <template #default="{ row }">{{ currency(row.balanceAmount) }}</template>
+        </el-table-column>
+        <el-table-column label="线下退款" min-width="110">
+          <template #default="{ row }">{{ currency(row.cashAmount) }}</template>
+        </el-table-column>
+        <el-table-column label="赠送金扣除" min-width="115">
+          <template #default="{ row }">
+            {{ row.giftForfeitedAmount ? currency(row.giftForfeitedAmount) : '--' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="operator" label="操作人" min-width="105" />
+        <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
+        <el-table-column label="退款后余额" min-width="120">
+          <template #default="{ row }">{{ currency(row.balanceAfter) }}</template>
+        </el-table-column>
+      </el-table>
       <TablePagination
         v-if="activeTab === 'members'"
         v-model="memberPage"
@@ -410,10 +548,16 @@ async function submitTransaction() {
         :total="filteredMembers.length"
       />
       <TablePagination
-        v-else
+        v-else-if="activeTab === 'transactions'"
         v-model="transactionPage"
         v-model:page-size="transactionPageSize"
         :total="filteredTransactions.length"
+      />
+      <TablePagination
+        v-else
+        v-model="refundPage"
+        v-model:page-size="refundPageSize"
+        :total="filteredRefunds.length"
       />
     </section>
 
@@ -568,6 +712,10 @@ async function submitTransaction() {
           <strong>{{ currency(selectedMember.giftBalance) }}</strong>
         </div>
         <div>
+          <span>当前可退本金</span>
+          <strong>{{ currency(selectedMember.refundablePrincipal) }}</strong>
+        </div>
+        <div>
           <span>累计消费</span>
           <strong>{{ currency(selectedMember.totalConsumption) }}</strong>
         </div>
@@ -594,6 +742,70 @@ async function submitTransaction() {
           </strong>
         </div>
       </div>
+      <template v-if="detailRefunds.length">
+        <h4 class="subheading">退款记录</h4>
+        <div class="simple-list">
+          <div v-for="item in detailRefunds" :key="item.id">
+            <span class="type-badge consume">退款</span>
+            <p>
+              <b>{{ item.refundType === 'account' ? '账户退款' : '套餐退款' }}</b>
+              <small>{{ dateTime(item.createdAt) }} · {{ item.operator }} · {{ item.note }}</small>
+            </p>
+            <strong class="consume">-{{ currency(item.amount) }}</strong>
+          </div>
+        </div>
+      </template>
+    </BaseModal>
+
+    <BaseModal
+      v-if="modal === 'accountRefund' && selectedMember"
+      title="会员账户退款"
+      :subtitle="`${selectedMember.name} · ${selectedMember.phone}`"
+      @close="modal = null"
+    >
+      <div class="detail-metrics">
+        <div>
+          <span>当前本金余额</span>
+          <strong>{{ currency(selectedMember.principalBalance) }}</strong>
+        </div>
+        <div>
+          <span>已消费赠送金抵扣</span>
+          <strong>
+            {{
+              currency(
+                Math.max(0, selectedMember.principalBalance - selectedMember.refundablePrincipal)
+              )
+            }}
+          </strong>
+        </div>
+        <div>
+          <span>本次退款金额</span>
+          <strong class="money">{{ currency(selectedMember.refundablePrincipal) }}</strong>
+        </div>
+        <div>
+          <span>清除赠送余额</span>
+          <strong>{{ currency(selectedMember.giftBalance) }}</strong>
+        </div>
+      </div>
+      <el-form label-position="top" style="margin-top: 10px">
+        <el-form-item label="退款备注">
+          <el-input
+            v-model="accountRefundForm.note"
+            type="textarea"
+            :rows="3"
+            maxlength="200"
+            show-word-limit
+            placeholder="选填"
+          />
+        </el-form-item>
+      </el-form>
+      <div class="form-tip">
+        实际退款按累计充值本金减去有效账户余额消费计算；未使用赠送余额将同时清零。
+      </div>
+      <template #footer>
+        <el-button @click="modal = null">取消</el-button>
+        <el-button type="danger" :loading="saving" @click="submitAccountRefund">确认退款</el-button>
+      </template>
     </BaseModal>
   </div>
 </template>

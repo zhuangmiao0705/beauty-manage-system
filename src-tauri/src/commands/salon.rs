@@ -1,10 +1,12 @@
 use crate::{
     commands::auth::{require_manager, require_session, revoke_account_sessions},
     database::{
-        employee_compensation_for_name, round_money, snapshot, snapshot_for_user,
-        validate_active_employee,
+        employee_compensation_for_name, refundable_principal_for_member, round_money, snapshot,
+        snapshot_for_user, validate_active_employee,
     },
-    models::{AppSnapshot, EmployeeInput, MemberInput, ServiceInput, TransactionInput},
+    models::{
+        AccountRefundInput, AppSnapshot, EmployeeInput, MemberInput, ServiceInput, TransactionInput,
+    },
     state::DatabaseState,
 };
 use chrono::{DateTime, Utc};
@@ -331,6 +333,75 @@ pub(crate) fn create_transaction(
 }
 
 #[tauri::command]
+pub(crate) fn refund_member_account(
+    token: String,
+    input: AccountRefundInput,
+    state: tauri::State<DatabaseState>,
+) -> Result<AppSnapshot, String> {
+    let manager = require_manager(&state, &token)?;
+    let mut connection = state
+        .connection
+        .lock()
+        .map_err(|_| "数据库锁定失败".to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let (member_name, principal_balance, gift_balance, total_recharge): (String, f64, f64, f64) =
+        transaction
+            .query_row(
+                "SELECT name,principal_balance,gift_balance,total_recharge FROM members
+                 WHERE id=?1 AND status='active'",
+                params![input.member_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .map_err(|_| "没有找到启用状态的会员".to_string())?;
+    if principal_balance <= 0.0 && gift_balance <= 0.0 {
+        return Err("该会员账户没有可退款或可清除的余额".to_string());
+    }
+    let refund_amount = refundable_principal_for_member(
+        &transaction,
+        &input.member_id,
+        total_recharge,
+        principal_balance,
+    )?;
+    let gift_deduction_amount =
+        round_money(gift_balance + (principal_balance - refund_amount).max(0.0));
+    let now = Utc::now().to_rfc3339();
+    transaction
+        .execute(
+            "UPDATE members SET balance=0,principal_balance=0,gift_balance=0,last_visit=?1
+             WHERE id=?2",
+            params![now, input.member_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO refund_records
+             (id,refund_type,member_id,member_name,package_purchase_id,amount,balance_amount,
+              cash_amount,gift_forfeited_amount,commission,employee,operator,balance_after,
+              created_at,note)
+             VALUES (?1,'account',?2,?3,NULL,?4,0,?4,?5,0,'',?6,0,?7,?8)",
+            params![
+                Uuid::new_v4().to_string(),
+                input.member_id,
+                member_name,
+                refund_amount,
+                gift_deduction_amount,
+                manager.display_name,
+                now,
+                if input.note.trim().is_empty() {
+                    "会员账户本金退款".to_string()
+                } else {
+                    input.note.trim().to_string()
+                }
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    snapshot_for_user(&connection, &manager)
+}
+
+#[tauri::command]
 pub(crate) fn create_service(
     token: String,
     input: ServiceInput,
@@ -423,19 +494,31 @@ pub(crate) fn cancel_service(
                 |row| row.get(0),
             )
             .map_err(|_| "对应的套餐消耗流水不存在或已撤销".to_string())?;
-        let (limit_type, remaining_uses, total_uses, expires_at): (
+        let (limit_type, remaining_uses, total_uses, expires_at, refunded_at): (
             String,
             i64,
             i64,
             Option<String>,
+            Option<String>,
         ) = transaction
             .query_row(
-                "SELECT limit_type,remaining_uses,total_uses,expires_at
+                "SELECT limit_type,remaining_uses,total_uses,expires_at,refunded_at
                  FROM package_purchases WHERE id=?1",
                 params![package_purchase_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .map_err(|_| "套餐购买记录不存在".to_string())?;
+        if refunded_at.is_some() {
+            return Err("套餐已退款，不能再撤销原消费".to_string());
+        }
         let changed = transaction
             .execute(
                 "UPDATE package_consumptions SET status='cancelled',cancelled_at=?1

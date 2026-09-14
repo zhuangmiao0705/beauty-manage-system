@@ -9,10 +9,28 @@
   width: 246px;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
   padding: 26px 18px 18px;
   background: #342a2d;
   color: white;
   box-shadow: 8px 0 30px rgba(45, 33, 37, 0.08);
+}
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+}
+.brand,
+.store-card,
+.sidebar-menu,
+.sidebar nav,
+.profile-card {
+  flex-shrink: 0;
 }
 .brand {
   display: flex;
@@ -86,15 +104,67 @@
   background: #72c49f;
   box-shadow: 0 0 0 3px rgba(114, 196, 159, 0.12);
 }
-.nav-caption {
-  margin: 0 11px 9px;
-  color: #817378;
-  font-size: 10px;
-  letter-spacing: 1.5px;
-}
 .sidebar nav {
   display: grid;
   gap: 5px;
+}
+.sidebar-menu.el-menu {
+  border-right: 0;
+  background: transparent;
+}
+.sidebar-menu .el-sub-menu__title,
+.sidebar-menu .el-menu-item {
+  position: relative;
+  border-radius: 10px;
+  color: #bdafb3;
+  font-size: 13px;
+  transition: 0.2s;
+}
+.sidebar-menu .el-sub-menu__title {
+  height: 44px;
+  padding: 0 13px !important;
+  color: #f0e8ea;
+  font-weight: 600;
+}
+.sidebar-menu .el-sub-menu__title:hover,
+.sidebar-menu .el-menu-item:hover {
+  color: white;
+  background: rgba(255, 255, 255, 0.05);
+}
+.sidebar-menu .el-sub-menu__icon-arrow {
+  color: #8d8084;
+}
+.sidebar-menu .el-sub-menu.is-active > .el-sub-menu__title {
+  color: white;
+}
+.sidebar-menu .el-menu {
+  background: transparent;
+}
+.sidebar-menu .el-menu-item {
+  height: 40px;
+  margin: 2px 0;
+  padding: 0 13px 0 31px !important;
+}
+.sidebar-menu .el-sub-menu + .el-sub-menu {
+  margin-top: 5px;
+}
+.sidebar-menu .el-sub-menu__title > svg,
+.sidebar-menu .el-menu-item > svg {
+  flex: 0 0 auto;
+  margin-right: 12px;
+}
+.sidebar-menu .el-menu-item.is-active {
+  color: white;
+  background: linear-gradient(90deg, rgba(202, 96, 118, 0.28), rgba(202, 96, 118, 0.08));
+}
+.sidebar-menu .el-menu-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: -18px;
+  width: 3px;
+  height: 22px;
+  border-radius: 0 3px 3px 0;
+  background: #dc7b8e;
 }
 .sidebar nav a {
   position: relative;
@@ -127,6 +197,7 @@
 }
 .sidebar-spacer {
   flex: 1;
+  min-height: 10px;
 }
 .bottom-nav {
   padding-top: 8px;
@@ -168,6 +239,35 @@
   width: 34px;
   height: 34px;
   flex: 0 0 auto;
+}
+
+@media (max-height: 760px) and (min-width: 761px) {
+  .sidebar {
+    padding-top: 16px;
+    padding-bottom: 12px;
+  }
+  .brand {
+    padding-bottom: 14px;
+  }
+  .store-card {
+    margin-bottom: 14px;
+    padding-block: 9px;
+  }
+  .sidebar nav {
+    gap: 3px;
+  }
+  .sidebar-menu .el-sub-menu__title {
+    height: 40px;
+  }
+  .sidebar-menu .el-menu-item {
+    height: 36px;
+  }
+  .sidebar nav a {
+    padding-block: 9px;
+  }
+  .profile-card {
+    margin-top: 10px;
+  }
 }
 
 .main-area {

@@ -21,7 +21,6 @@ import { salonStore } from '../data/repository'
 import {
   buildAmountTrend,
   buildEmployeeStats,
-  buildRevenueTrend,
   recordsInRange,
   type AmountTrendRecord,
   type TrendAggregation
@@ -36,32 +35,56 @@ type RevenueMetric =
 const selectedMetric = ref<RevenueMetric>('actualIncome')
 const rangeLabel = computed(() => REPORT_RANGES[range.value].label)
 const transactions = computed(() => recordsInRange(salonStore.transactions, range.value))
+const refunds = computed(() => recordsInRange(salonStore.refundRecords, range.value))
+const packageRefunds = computed(() => refunds.value.filter(item => item.refundType === 'package'))
 const services = computed(() =>
   recordsInRange(salonStore.services, range.value).filter(item => item.status === 'completed')
 )
-const consumption = computed(() =>
-  transactions.value
-    .filter(item => item.type === 'consume' && item.status !== 'cancelled')
-    .reduce((sum, item) => sum + item.amount, 0)
+const consumption = computed(
+  () =>
+    transactions.value
+      .filter(item => item.type === 'consume' && item.status !== 'cancelled')
+      .reduce((sum, item) => sum + item.amount, 0) -
+    packageRefunds.value.reduce((sum, item) => sum + item.amount, 0)
 )
-const recharge = computed(() =>
-  transactions.value
-    .filter(item => item.type === 'recharge')
-    .reduce((sum, item) => sum + item.amount, 0)
+const recharge = computed(
+  () =>
+    transactions.value
+      .filter(item => item.type === 'recharge')
+      .reduce((sum, item) => sum + item.amount, 0) -
+    refunds.value
+      .filter(item => item.refundType === 'account')
+      .reduce((sum, item) => sum + item.amount, 0)
 )
 const packagePurchases = computed(() => {
   const cutoff = dateFromDaysAgo(REPORT_RANGES[range.value].days)
   return salonStore.packagePurchases.filter(item => new Date(item.purchasedAt) >= cutoff)
 })
-const boxPackageSales = computed(() =>
-  packagePurchases.value
-    .filter(item => item.packageType === '套盒')
-    .reduce((sum, item) => sum + item.price, 0)
+const boxPackageSales = computed(
+  () =>
+    packagePurchases.value
+      .filter(item => item.packageType === '套盒')
+      .reduce((sum, item) => sum + item.price, 0) -
+    packageRefunds.value
+      .filter(item =>
+        salonStore.packagePurchases.some(
+          purchase => purchase.id === item.packagePurchaseId && purchase.packageType === '套盒'
+        )
+      )
+      .reduce((sum, item) => sum + item.amount, 0)
 )
-const normalPackageSales = computed(() =>
-  packagePurchases.value
-    .filter(item => item.packageType === '普通')
-    .reduce((sum, item) => sum + item.price, 0)
+const normalPackageSales = computed(
+  () =>
+    packagePurchases.value
+      .filter(item => item.packageType === '普通')
+      .reduce((sum, item) => sum + item.price, 0) -
+    packageRefunds.value
+      .filter(item =>
+        salonStore.packagePurchases.some(
+          purchase => purchase.id === item.packagePurchaseId && purchase.packageType === '普通'
+        )
+      )
+      .reduce((sum, item) => sum + item.amount, 0)
 )
 const average = computed(() =>
   services.value.length
@@ -85,6 +108,11 @@ const todayPackageIncome = computed(() =>
     .filter(item => isToday(item.purchasedAt))
     .reduce((sum, item) => sum + item.cashPaymentAmount, 0)
 )
+const todayRefundOutflow = computed(() =>
+  salonStore.refundRecords
+    .filter(item => isToday(item.createdAt))
+    .reduce((sum, item) => sum + item.cashAmount, 0)
+)
 const todayLegacyIncome = computed(() =>
   salonStore.transactions
     .filter(
@@ -102,7 +130,8 @@ const todayRevenue = computed(
     todayRechargeIncome.value +
     todayServiceIncome.value +
     todayPackageIncome.value +
-    todayLegacyIncome.value
+    todayLegacyIncome.value -
+    todayRefundOutflow.value
 )
 const todayRevenueHint = computed(() => {
   const parts = [
@@ -111,6 +140,7 @@ const todayRevenueHint = computed(() => {
     `套餐现金 ${currency(todayPackageIncome.value)}`
   ]
   if (todayLegacyIncome.value) parts.push(`其他入账 ${currency(todayLegacyIncome.value)}`)
+  if (todayRefundOutflow.value) parts.push(`退款支出 ${currency(todayRefundOutflow.value)}`)
   return parts.join(' · ')
 })
 
@@ -132,7 +162,10 @@ const actualIncomeRecords = computed<AmountTrendRecord[]>(() => [
         (!item.sourceType || item.sourceType === 'legacy') &&
         item.paymentMethod !== '会员余额'
     )
-    .map(item => ({ createdAt: item.createdAt, amount: item.amount }))
+    .map(item => ({ createdAt: item.createdAt, amount: item.amount })),
+  ...salonStore.refundRecords
+    .filter(item => item.cashAmount > 0)
+    .map(item => ({ createdAt: item.createdAt, amount: -item.cashAmount }))
 ])
 const metricMeta: Record<
   RevenueMetric,
@@ -142,7 +175,7 @@ const metricMeta: Record<
     label: '实际入账',
     description: '充值本金、服务外部支付与套餐现金支付合计'
   },
-  recharge: { label: '会员充值', description: '会员实充本金，不包含赠送金额' },
+  recharge: { label: '会员充值', description: '会员实充本金减账户退款，不包含赠送金额' },
   boxPackage: { label: '套盒套餐销售', description: '套盒类型套餐成交金额' },
   normalPackage: { label: '普通套餐销售', description: '普通类型套餐成交金额' },
   serviceAverage: {
@@ -158,33 +191,57 @@ const selectedMetricRecords = computed<AmountTrendRecord[]>(() => {
     case 'actualIncome':
       return actualIncomeRecords.value
     case 'recharge':
-      return salonStore.transactions
-        .filter(item => item.type === 'recharge' && item.status !== 'cancelled')
-        .map(item => ({ createdAt: item.createdAt, amount: item.amount }))
+      return [
+        ...salonStore.transactions
+          .filter(item => item.type === 'recharge' && item.status !== 'cancelled')
+          .map(item => ({ createdAt: item.createdAt, amount: item.amount })),
+        ...salonStore.refundRecords
+          .filter(item => item.refundType === 'account')
+          .map(item => ({ createdAt: item.createdAt, amount: -item.amount }))
+      ]
     case 'boxPackage':
-      return salonStore.packagePurchases
-        .filter(item => item.packageType === '套盒')
-        .map(item => ({ createdAt: item.purchasedAt, amount: item.price }))
+      return [
+        ...salonStore.packagePurchases
+          .filter(item => item.packageType === '套盒')
+          .map(item => ({ createdAt: item.purchasedAt, amount: item.price })),
+        ...salonStore.refundRecords
+          .filter(item =>
+            salonStore.packagePurchases.some(
+              purchase => purchase.id === item.packagePurchaseId && purchase.packageType === '套盒'
+            )
+          )
+          .map(item => ({ createdAt: item.createdAt, amount: -item.amount }))
+      ]
     case 'normalPackage':
-      return salonStore.packagePurchases
-        .filter(item => item.packageType === '普通')
-        .map(item => ({ createdAt: item.purchasedAt, amount: item.price }))
+      return [
+        ...salonStore.packagePurchases
+          .filter(item => item.packageType === '普通')
+          .map(item => ({ createdAt: item.purchasedAt, amount: item.price })),
+        ...salonStore.refundRecords
+          .filter(item =>
+            salonStore.packagePurchases.some(
+              purchase => purchase.id === item.packagePurchaseId && purchase.packageType === '普通'
+            )
+          )
+          .map(item => ({ createdAt: item.createdAt, amount: -item.amount }))
+      ]
     case 'serviceAverage':
       return salonStore.services
         .filter(item => item.status === 'completed')
         .map(item => ({ createdAt: item.createdAt, amount: item.amount }))
     default:
-      return []
+      return [
+        ...salonStore.transactions
+          .filter(item => item.type === 'consume' && item.status !== 'cancelled')
+          .map(item => ({ createdAt: item.createdAt, amount: item.amount })),
+        ...salonStore.refundRecords
+          .filter(item => item.refundType === 'package')
+          .map(item => ({ createdAt: item.createdAt, amount: -item.amount }))
+      ]
   }
 })
 const trend = computed(() =>
-  selectedMetric.value === 'consumption'
-    ? buildRevenueTrend(salonStore.transactions, range.value)
-    : buildAmountTrend(
-        selectedMetricRecords.value,
-        range.value,
-        selectedMetricMeta.value.aggregation
-      )
+  buildAmountTrend(selectedMetricRecords.value, range.value, selectedMetricMeta.value.aggregation)
 )
 
 const employeeStats = computed(() => buildEmployeeStats(salonStore.employees, services.value))

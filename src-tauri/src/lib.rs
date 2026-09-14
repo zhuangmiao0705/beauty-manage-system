@@ -14,13 +14,14 @@ use commands::{
     },
     backup::{automatic_daily_backup, create_backup, restore_latest_backup},
     packages::{
-        consume_package, create_package, purchase_package, set_package_status, update_package,
+        consume_package, create_package, purchase_package, refund_package, set_package_status,
+        update_package,
     },
     payroll::{get_employee_salaries, update_commission_config, upsert_attendance},
     projects::{create_project, set_project_status, update_project},
     salon::{
         cancel_service, create_employee, create_member, create_service, create_transaction,
-        get_snapshot, set_employee_status,
+        get_snapshot, refund_member_account, set_employee_status,
     },
 };
 use database::initialize_database;
@@ -73,6 +74,8 @@ pub fn run() {
             set_package_status,
             purchase_package,
             consume_package,
+            refund_package,
+            refund_member_account,
             create_project,
             update_project,
             set_project_status,

@@ -31,15 +31,23 @@ const storeServices = computed(() => todayServices.value)
 const storeServiceAmount = computed(() =>
   storeServices.value.reduce((sum, item) => sum + item.amount, 0)
 )
-const todayRevenue = computed(() =>
-  todayTransactions.value
-    .filter(item => item.type === 'consume' && item.status !== 'cancelled')
-    .reduce((sum, item) => sum + item.amount, 0)
+const todayRevenue = computed(
+  () =>
+    todayTransactions.value
+      .filter(item => item.type === 'consume' && item.status !== 'cancelled')
+      .reduce((sum, item) => sum + item.amount, 0) -
+    salonStore.refundRecords
+      .filter(item => item.refundType === 'package' && isToday(item.createdAt))
+      .reduce((sum, item) => sum + item.amount, 0)
 )
-const todayRecharge = computed(() =>
-  todayTransactions.value
-    .filter(item => item.type === 'recharge')
-    .reduce((sum, item) => sum + item.amount, 0)
+const todayRecharge = computed(
+  () =>
+    todayTransactions.value
+      .filter(item => item.type === 'recharge')
+      .reduce((sum, item) => sum + item.amount, 0) -
+    salonStore.refundRecords
+      .filter(item => item.refundType === 'account' && isToday(item.createdAt))
+      .reduce((sum, item) => sum + item.amount, 0)
 )
 const totalBalance = computed(() =>
   salonStore.members.reduce((sum, member) => sum + member.balance, 0)
@@ -58,16 +66,24 @@ const trend = computed(() => {
   const days = Array.from({ length: 7 }, (_, index) => {
     const date = new Date()
     date.setDate(date.getDate() - (6 - index))
-    const amount = salonStore.transactions
-      .filter(item => {
-        const current = new Date(item.createdAt)
-        return (
-          item.type === 'consume' &&
-          item.status !== 'cancelled' &&
-          current.toDateString() === date.toDateString()
+    const amount =
+      salonStore.transactions
+        .filter(item => {
+          const current = new Date(item.createdAt)
+          return (
+            item.type === 'consume' &&
+            item.status !== 'cancelled' &&
+            current.toDateString() === date.toDateString()
+          )
+        })
+        .reduce((sum, item) => sum + item.amount, 0) -
+      salonStore.refundRecords
+        .filter(
+          item =>
+            item.refundType === 'package' &&
+            new Date(item.createdAt).toDateString() === date.toDateString()
         )
-      })
-      .reduce((sum, item) => sum + item.amount, 0)
+        .reduce((sum, item) => sum + item.amount, 0)
     return { label: `${date.getMonth() + 1}/${date.getDate()}`, amount }
   })
   return days
@@ -75,6 +91,7 @@ const trend = computed(() => {
 
 const employeeRanking = computed(() =>
   salonStore.employees
+    .filter(employee => employee.status === 'active')
     .map(employee => {
       const records = todayServices.value.filter(item => item.employee === employee.name)
       return {

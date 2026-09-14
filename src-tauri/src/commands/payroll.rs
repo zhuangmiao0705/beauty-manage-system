@@ -273,6 +273,16 @@ pub(crate) fn get_employee_salaries(
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
+        let package_refund_amount: f64 = connection
+            .query_row(
+                "SELECT COALESCE(SUM(cash_amount),0) FROM refund_records
+                 WHERE refund_type='package' AND employee=?1
+                   AND created_at>=?2 AND created_at<?3",
+                params![name, start_text, end_text],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let package_purchase_amount = round_money(package_purchase_amount - package_refund_amount);
         let normal_service_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM services

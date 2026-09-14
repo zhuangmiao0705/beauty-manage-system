@@ -23,7 +23,7 @@ export interface PerformanceDetailRow {
   id: string
   memberName: string
   memberPhone: string
-  source: '会员充值' | '套餐额外支付'
+  source: '会员充值' | '套餐额外支付' | '套餐退款冲减'
   businessName: string
   businessAmount: number
   giftAmount: number
@@ -120,7 +120,32 @@ export function buildPerformanceDetails(
       paymentMethod: item.paymentMethod,
       createdAt: item.purchasedAt
     }))
-  return [...rechargeDetails, ...packageDetails].sort((a, b) =>
+  const packageRefundDetails: PerformanceDetailRow[] = snapshot.refundRecords
+    .filter(
+      item =>
+        item.refundType === 'package' &&
+        item.employee === employee.name &&
+        isInMonth(item.createdAt, month)
+    )
+    .map(item => {
+      const purchase = snapshot.packagePurchases.find(
+        purchaseItem => purchaseItem.id === item.packagePurchaseId
+      )
+      return {
+        id: `package-refund-${item.id}`,
+        memberName: item.memberName,
+        memberPhone: memberPhone(snapshot, item.memberId),
+        source: '套餐退款冲减' as const,
+        businessName: purchase?.packageName ?? '套餐退款',
+        businessAmount: -item.amount,
+        giftAmount: 0,
+        balancePaymentAmount: -item.balanceAmount,
+        performanceAmount: -item.cashAmount,
+        paymentMethod: '退款',
+        createdAt: item.createdAt
+      }
+    })
+  return [...rechargeDetails, ...packageDetails, ...packageRefundDetails].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt)
   )
 }
@@ -182,6 +207,12 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
       const purchases = snapshot.packagePurchases.filter(
         item => item.employee === employee.name && isInMonth(item.purchasedAt, month)
       )
+      const packageRefunds = snapshot.refundRecords.filter(
+        item =>
+          item.refundType === 'package' &&
+          item.employee === employee.name &&
+          isInMonth(item.createdAt, month)
+      )
       const packageServices = snapshot.services.filter(
         item =>
           item.status === 'completed' &&
@@ -198,9 +229,9 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
       )
       const baseSalary = roundMoney((compensation.baseSalary / standardWorkDays) * workDays)
       const rechargePerformance = recharges.reduce((sum, item) => sum + item.amount, 0)
-      const packagePurchasePerformance = purchases.reduce(
-        (sum, item) => sum + item.cashPaymentAmount,
-        0
+      const packagePurchasePerformance = roundMoney(
+        purchases.reduce((sum, item) => sum + item.cashPaymentAmount, 0) -
+          packageRefunds.reduce((sum, item) => sum + item.cashAmount, 0)
       )
       const totalPerformance = roundMoney(rechargePerformance + packagePurchasePerformance)
       const commission = roundMoney(

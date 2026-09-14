@@ -15,6 +15,7 @@ export interface Member {
   balance: number
   principalBalance: number
   giftBalance: number
+  refundablePrincipal: number
   totalRecharge: number
   totalConsumption: number
   joinDate: string
@@ -145,6 +146,7 @@ export interface PackagePurchase {
   packageType: PackageType
   employee: string
   price: number
+  singleOriginalPrice: number | null
   totalUses: number
   remainingUses: number
   limitType: PackageLimitType
@@ -160,6 +162,11 @@ export interface PackagePurchase {
   lastConsumedAt: string | null
   status: 'active' | 'completed'
   transactionId: string
+  refundedAt: string | null
+  refundAmount: number
+  refundBalanceAmount: number
+  refundCashAmount: number
+  note: string
 }
 
 export interface PackageConsumption {
@@ -173,6 +180,26 @@ export interface PackageConsumption {
   serviceId: string
   status: 'active' | 'cancelled'
   cancelledAt: string | null
+}
+
+export type RefundType = 'package' | 'account'
+
+export interface RefundRecord {
+  id: string
+  refundType: RefundType
+  memberId: string
+  memberName: string
+  packagePurchaseId: string | null
+  amount: number
+  balanceAmount: number
+  cashAmount: number
+  giftForfeitedAmount: number
+  commission: number
+  employee: string
+  operator: string
+  balanceAfter: number
+  createdAt: string
+  note: string
 }
 
 export interface Appointment {
@@ -228,6 +255,7 @@ export interface AppSnapshot {
   packages: PackageDefinition[]
   packagePurchases: PackagePurchase[]
   packageConsumptions: PackageConsumption[]
+  refundRecords: RefundRecord[]
   appointments: Appointment[]
 }
 
@@ -296,6 +324,17 @@ export interface PackageDefinitionInput {
   packageType: PackageType
 }
 
+export interface PackageRefundInput {
+  purchaseId: string
+  singleOriginalPrice: number
+  note: string
+}
+
+export interface AccountRefundInput {
+  memberId: string
+  note: string
+}
+
 export interface PackagePurchaseInput {
   memberId: string
   packageId: string
@@ -304,6 +343,7 @@ export interface PackagePurchaseInput {
   paymentMethod: PackagePaymentMethod
   balancePaymentAmount: number
   cashPaymentAmount: number
+  note: string
 }
 
 export interface PackageConsumptionInput {

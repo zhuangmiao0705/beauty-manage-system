@@ -3,6 +3,7 @@ import { invokeCommand, isTauriRuntime } from '../platform/tauri'
 import { authStore } from '../auth/store'
 import type {
   AppSnapshot,
+  AccountRefundInput,
   AppointmentCompletionInput,
   AppointmentInput,
   AppointmentStatus,
@@ -13,6 +14,7 @@ import type {
   PackageConsumptionInput,
   PackageDefinitionInput,
   PackagePurchaseInput,
+  PackageRefundInput,
   ProjectDefinitionInput,
   ServiceInput,
   TransactionInput
@@ -31,6 +33,7 @@ import {
   cancelBrowserService,
   downloadBrowserBackup,
   loadBrowserSnapshot,
+  refundBrowserMemberAccount,
   saveBrowserSnapshot,
   setBrowserEmployeeStatus
 } from './browserRepository'
@@ -38,7 +41,9 @@ import {
   consumeBrowserPackage,
   createBrowserProject,
   createBrowserPackage,
+  normalizeBusinessSnapshot,
   purchaseBrowserPackage,
+  refundBrowserPackage,
   saveBrowserAttendance,
   saveBrowserCommissionConfig,
   setBrowserProjectStatus,
@@ -60,6 +65,7 @@ const emptySnapshot = (): AppSnapshot => ({
   packages: [],
   packagePurchases: [],
   packageConsumptions: [],
+  refundRecords: [],
   appointments: []
 })
 
@@ -92,6 +98,7 @@ function setState(snapshot: AppSnapshot) {
     state.packageConsumptions.length,
     ...snapshot.packageConsumptions
   )
+  state.refundRecords.splice(0, state.refundRecords.length, ...(snapshot.refundRecords ?? []))
   state.appointments.splice(0, state.appointments.length, ...snapshot.appointments)
 }
 
@@ -100,6 +107,7 @@ const desktopCall = <T>(command: string, args?: Record<string, unknown>) =>
 
 function persistBrowserMutation(mutation: (snapshot: AppSnapshot) => void) {
   mutation(state)
+  normalizeBusinessSnapshot(state)
   saveBrowserSnapshot(state)
 }
 
@@ -204,6 +212,22 @@ export async function purchasePackage(input: PackagePurchaseInput) {
 export async function consumePackage(input: PackageConsumptionInput) {
   if (isTauriRuntime()) setState(await desktopCall<AppSnapshot>('consume_package', { input }))
   else persistBrowserMutation(snapshot => consumeBrowserPackage(snapshot, input))
+}
+
+export async function refundPackage(input: PackageRefundInput) {
+  if (isTauriRuntime()) setState(await desktopCall<AppSnapshot>('refund_package', { input }))
+  else
+    persistBrowserMutation(snapshot =>
+      refundBrowserPackage(snapshot, input, authStore.user?.displayName ?? '本地账号')
+    )
+}
+
+export async function refundMemberAccount(input: AccountRefundInput) {
+  if (isTauriRuntime()) setState(await desktopCall<AppSnapshot>('refund_member_account', { input }))
+  else
+    persistBrowserMutation(snapshot =>
+      refundBrowserMemberAccount(snapshot, input, authStore.user?.displayName ?? '本地账号')
+    )
 }
 
 export async function createAppointment(input: AppointmentInput) {

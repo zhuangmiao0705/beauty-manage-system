@@ -14,11 +14,97 @@ import type {
   PackageConsumptionInput,
   PackageDefinitionInput,
   PackagePurchaseInput,
+  PackageRefundInput,
   ProjectDefinitionInput
 } from '../types'
 import { isPackagePurchaseAvailable, localMonthKey } from '../utils'
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100
+
+const DEFAULT_EMPLOYEES = [
+  ['e1', '林晓雅'],
+  ['e2', '周可欣'],
+  ['e3', '陈思思'],
+  ['e4', '王小曼']
+] as const
+
+function cleanupDefaultEmployees(snapshot: AppSnapshot) {
+  DEFAULT_EMPLOYEES.forEach(([id, name]) => {
+    const employee = snapshot.employees.find(item => item.id === id && item.name === name)
+    if (!employee) return
+    const used =
+      snapshot.transactions.some(item => item.employee === name) ||
+      snapshot.services.some(item => item.employee === name) ||
+      snapshot.packagePurchases.some(item => item.employee === name) ||
+      snapshot.packageConsumptions.some(item => item.employee === name) ||
+      snapshot.appointments.some(item => item.employee === name) ||
+      snapshot.attendanceRecords.some(item => item.employeeId === id)
+    if (used) {
+      employee.status = 'inactive'
+      if (
+        !snapshot.employeeStatusEvents.some(
+          item => item.employeeId === id && item.status === 'inactive'
+        )
+      )
+        snapshot.employeeStatusEvents.push({
+          id: crypto.randomUUID(),
+          employeeId: id,
+          status: 'inactive',
+          changedAt: new Date().toISOString()
+        })
+      return
+    }
+    snapshot.employees.splice(snapshot.employees.indexOf(employee), 1)
+    snapshot.employeeCompensations = snapshot.employeeCompensations.filter(
+      item => item.employeeId !== id
+    )
+    snapshot.employeeStatusEvents = snapshot.employeeStatusEvents.filter(
+      item => item.employeeId !== id
+    )
+  })
+}
+
+function refundablePrincipal(snapshot: AppSnapshot, memberId: string) {
+  const member = snapshot.members.find(item => item.id === memberId)
+  if (!member) return 0
+  const serviceSpending = snapshot.services
+    .filter(item => item.memberId === memberId && item.status === 'completed')
+    .reduce((sum, item) => sum + (item.balancePaymentAmount ?? 0), 0)
+  const packageSpending = snapshot.packagePurchases
+    .filter(item => item.memberId === memberId)
+    .reduce((sum, item) => sum + item.balancePaymentAmount, 0)
+  const legacySpending = snapshot.transactions
+    .filter(
+      item =>
+        item.memberId === memberId &&
+        item.type === 'consume' &&
+        item.status !== 'cancelled' &&
+        item.paymentMethod === '会员余额' &&
+        !snapshot.services.some(service => service.transactionId === item.id) &&
+        !snapshot.packagePurchases.some(purchase => purchase.transactionId === item.id)
+    )
+    .reduce((sum, item) => sum + item.amount, 0)
+  const packageReturns = snapshot.refundRecords
+    .filter(item => item.memberId === memberId && item.refundType === 'package')
+    .reduce((sum, item) => sum + item.balanceAmount, 0)
+  const priorAccountRefunds = snapshot.refundRecords
+    .filter(item => item.memberId === memberId && item.refundType === 'account')
+    .reduce((sum, item) => sum + item.amount, 0)
+  return roundMoney(
+    Math.min(
+      member.principalBalance,
+      Math.max(
+        0,
+        member.totalRecharge +
+          packageReturns -
+          serviceSpending -
+          packageSpending -
+          legacySpending -
+          priorAccountRefunds
+      )
+    )
+  )
+}
 
 function transactionBalanceDeduction(
   snapshot: AppSnapshot,
@@ -99,7 +185,11 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   snapshot.packages ??= []
   snapshot.packagePurchases ??= []
   snapshot.packageConsumptions ??= []
+  snapshot.refundRecords ??= []
   snapshot.projects ??= []
+  snapshot.appointments ??= []
+
+  cleanupDefaultEmployees(snapshot)
 
   if (!snapshot.commissionConfigs.length) {
     snapshot.commissionConfigs.push({
@@ -131,6 +221,13 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
       purchase.status = 'completed'
     purchase.balancePaymentAmount ??= purchase.paymentMethod === '会员余额' ? purchase.price : 0
     purchase.cashPaymentAmount ??= purchase.paymentMethod === '现金' ? purchase.price : 0
+    purchase.singleOriginalPrice ??= null
+    purchase.refundedAt ??= null
+    purchase.refundAmount ??= 0
+    purchase.refundBalanceAmount ??= 0
+    purchase.refundCashAmount ??= 0
+    purchase.note ??= ''
+    if (purchase.refundedAt) purchase.status = 'completed'
   })
 
   snapshot.packageConsumptions.forEach(consumption => {
@@ -150,6 +247,7 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
       Object.assign(member, legacyBalanceParts(snapshot, member.id, member.balance))
     }
     member.balance = roundMoney(member.principalBalance + member.giftBalance)
+    member.refundablePrincipal = refundablePrincipal(snapshot, member.id)
   })
 
   snapshot.employees.forEach(employee => {
@@ -458,6 +556,7 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     packageType: packageItem.packageType,
     employee: employee.name,
     price: packageItem.price,
+    singleOriginalPrice: null,
     totalUses: packageItem.totalUses,
     remainingUses: packageItem.totalUses,
     limitType: packageItem.limitType,
@@ -476,8 +575,91 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     lastConsumedAt: null,
     status:
       expiresAt && new Date(expiresAt).getTime() <= nowValue.getTime() ? 'completed' : 'active',
-    transactionId
+    transactionId,
+    refundedAt: null,
+    refundAmount: 0,
+    refundBalanceAmount: 0,
+    refundCashAmount: 0,
+    note: input.note.trim()
   })
+}
+
+export function refundBrowserPackage(
+  snapshot: AppSnapshot,
+  input: PackageRefundInput,
+  operator: string
+) {
+  const purchase = snapshot.packagePurchases.find(item => item.id === input.purchaseId)
+  if (!purchase) throw new Error('套餐购买记录不存在')
+  if (purchase.refundedAt) throw new Error('该套餐已经退款，请勿重复操作')
+  if (
+    purchase.limitType === 'time' &&
+    (!purchase.expiresAt || new Date(purchase.expiresAt).getTime() <= Date.now())
+  )
+    throw new Error('该时间套餐已经到期，不能发起退款')
+  if (
+    snapshot.appointments.some(
+      item =>
+        item.packagePurchaseId === purchase.id &&
+        ['pending', 'arrived', 'in_service'].includes(item.status)
+    )
+  )
+    throw new Error('该套餐存在未完成预约，请先处理预约后再退款')
+  const activeConsumptions = snapshot.packageConsumptions.filter(
+    item => item.purchaseId === purchase.id && item.status === 'active'
+  ).length
+  const consumedCount =
+    purchase.limitType === 'count'
+      ? Math.max(activeConsumptions, purchase.totalUses - purchase.remainingUses)
+      : activeConsumptions
+  const singleOriginalPrice = input.singleOriginalPrice
+  if (!Number.isFinite(singleOriginalPrice) || singleOriginalPrice <= 0)
+    throw new Error('请填写有效的单次原价')
+  const refundAmount = roundMoney(Math.max(0, purchase.price - consumedCount * singleOriginalPrice))
+  const refundBalanceAmount =
+    purchase.price > 0
+      ? Math.min(
+          refundAmount,
+          purchase.balancePaymentAmount,
+          roundMoney((refundAmount * purchase.balancePaymentAmount) / purchase.price)
+        )
+      : 0
+  const refundCashAmount = roundMoney(refundAmount - refundBalanceAmount)
+  const member = snapshot.members.find(item => item.id === purchase.memberId)
+  if (!member) throw new Error('会员不存在，无法退款')
+  member.principalBalance = roundMoney(member.principalBalance + refundBalanceAmount)
+  member.balance = roundMoney(member.principalBalance + member.giftBalance)
+  member.totalConsumption = roundMoney(Math.max(0, member.totalConsumption - refundAmount))
+  member.lastVisit = new Date().toISOString()
+  purchase.singleOriginalPrice = roundMoney(singleOriginalPrice)
+  purchase.status = 'completed'
+  purchase.refundedAt = member.lastVisit
+  purchase.refundAmount = refundAmount
+  purchase.refundBalanceAmount = refundBalanceAmount
+  purchase.refundCashAmount = refundCashAmount
+  const refundCommission =
+    purchase.cashPaymentAmount > 0
+      ? roundMoney((purchase.commission * refundCashAmount) / purchase.cashPaymentAmount)
+      : 0
+  snapshot.refundRecords.unshift({
+    id: crypto.randomUUID(),
+    refundType: 'package',
+    memberId: member.id,
+    memberName: member.name,
+    packagePurchaseId: purchase.id,
+    amount: refundAmount,
+    balanceAmount: refundBalanceAmount,
+    cashAmount: refundCashAmount,
+    giftForfeitedAmount: 0,
+    commission: refundCommission,
+    employee: purchase.employee,
+    operator,
+    balanceAfter: member.balance,
+    createdAt: member.lastVisit,
+    note: input.note.trim() || `套餐退款：${purchase.packageName}，已做${consumedCount}次`
+  })
+  const transaction = snapshot.transactions.find(item => item.id === purchase.transactionId)
+  if (transaction) transaction.note = `${transaction.note}；套餐已退款${refundAmount.toFixed(2)}元`
 }
 
 export function consumeBrowserPackage(snapshot: AppSnapshot, input: PackageConsumptionInput) {

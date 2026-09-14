@@ -2,6 +2,7 @@ import { STORAGE_KEYS } from '../config/app'
 import { COMMISSION_RULE_VERSION } from '../config/options'
 import type {
   AppSnapshot,
+  AccountRefundInput,
   EmployeeInput,
   MemberInput,
   ServiceInput,
@@ -46,6 +47,7 @@ export function addBrowserMember(state: AppSnapshot, input: MemberInput) {
     balance: creditedAmount,
     principalBalance: input.initialBalance,
     giftBalance: input.giftAmount,
+    refundablePrincipal: input.initialBalance,
     totalRecharge: input.initialBalance,
     totalConsumption: 0,
     joinDate: now,
@@ -114,6 +116,44 @@ export function addBrowserTransaction(state: AppSnapshot, input: TransactionInpu
     employee: employee.name,
     createdAt: new Date().toISOString(),
     note: input.note
+  })
+}
+
+export function refundBrowserMemberAccount(
+  state: AppSnapshot,
+  input: AccountRefundInput,
+  operator: string
+) {
+  const member = state.members.find(item => item.id === input.memberId && item.status === 'active')
+  if (!member) throw new Error('没有找到启用状态的会员')
+  if (member.principalBalance <= 0 && member.giftBalance <= 0)
+    throw new Error('该会员账户没有可退款或可清除的余额')
+  const refundAmount = member.refundablePrincipal
+  const giftForfeitedAmount =
+    Math.round((member.giftBalance + Math.max(0, member.principalBalance - refundAmount)) * 100) /
+    100
+  const now = new Date().toISOString()
+  member.balance = 0
+  member.principalBalance = 0
+  member.giftBalance = 0
+  member.refundablePrincipal = 0
+  member.lastVisit = now
+  state.refundRecords.unshift({
+    id: crypto.randomUUID(),
+    refundType: 'account',
+    memberId: member.id,
+    memberName: member.name,
+    packagePurchaseId: null,
+    amount: refundAmount,
+    balanceAmount: 0,
+    cashAmount: refundAmount,
+    giftForfeitedAmount,
+    commission: 0,
+    employee: '',
+    operator,
+    balanceAfter: 0,
+    createdAt: now,
+    note: input.note.trim() || '会员账户本金退款'
   })
 }
 

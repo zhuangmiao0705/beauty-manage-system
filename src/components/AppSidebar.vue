@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { CircleDollarSign } from 'lucide-vue-next'
 import { authStore } from '../auth'
 import { getMainNavigation, getUtilityNavigation } from '../config/navigation'
 
 defineEmits<{ navigate: [] }>()
-const items = computed(() => getMainNavigation(authStore.user?.role))
+const route = useRoute()
+const groups = computed(() => getMainNavigation(authStore.user?.role))
+const activeGroup = computed(
+  () => groups.value.find(group => group.items.some(item => item.to === route.path))?.label
+)
 const utilityItems = computed(() => getUtilityNavigation(authStore.user?.role))
 </script>
 
@@ -28,13 +33,25 @@ const utilityItems = computed(() => getUtilityNavigation(authStore.user?.role))
         </small>
       </div>
     </div>
-    <nav>
-      <p class="nav-caption">门店管理</p>
-      <router-link v-for="item in items" :key="item.to" :to="item.to" @click="$emit('navigate')">
-        <component :is="item.icon" :size="19" />
-        <span>{{ item.label }}</span>
-      </router-link>
-    </nav>
+    <el-menu
+      class="sidebar-menu"
+      :default-active="route.path"
+      :default-openeds="activeGroup ? [activeGroup] : []"
+      unique-opened
+      router
+      @select="$emit('navigate')"
+    >
+      <el-sub-menu v-for="group in groups" :key="group.label" :index="group.label">
+        <template #title>
+          <component :is="group.icon" :size="19" />
+          <span>{{ group.label }}</span>
+        </template>
+        <el-menu-item v-for="item in group.items" :key="item.to" :index="item.to">
+          <component :is="item.icon" :size="17" />
+          <span>{{ item.label }}</span>
+        </el-menu-item>
+      </el-sub-menu>
+    </el-menu>
     <div class="sidebar-spacer" />
     <nav class="bottom-nav">
       <router-link

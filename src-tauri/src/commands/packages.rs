@@ -5,7 +5,7 @@ use crate::{
     },
     models::{
         AppSnapshot, EmployeeCompensation, PackageConsumptionInput, PackageDefinitionInput,
-        PackagePurchaseInput,
+        PackagePurchaseInput, PackageRefundInput,
     },
     state::DatabaseState,
 };
@@ -94,6 +94,20 @@ fn resolve_payment_amounts(
         return Err("实付本金余额不足，赠送余额不可购买套餐".to_string());
     }
     Ok((balance_amount, cash_amount))
+}
+
+fn package_refund_amount(price: f64, consumed_count: i64, single_original_price: f64) -> f64 {
+    round_money((price - consumed_count.max(0) as f64 * single_original_price).max(0.0))
+}
+
+fn split_refund_amount(price: f64, refund_amount: f64, balance_payment_amount: f64) -> (f64, f64) {
+    if price <= 0.0 || refund_amount <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let balance_refund = round_money(refund_amount * balance_payment_amount / price)
+        .min(balance_payment_amount)
+        .min(refund_amount);
+    (balance_refund, round_money(refund_amount - balance_refund))
 }
 
 #[tauri::command]
@@ -323,12 +337,12 @@ pub(crate) fn purchase_package(
     transaction
         .execute(
             "INSERT INTO package_purchases
-             (id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,
-              remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,
+             (id,member_id,member_name,employee,package_id,package_name,package_type,price,
+              total_uses,remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,
               balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,
-              commission,commission_rule_version,transaction_id)
+              commission,commission_rule_version,transaction_id,note)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,?14,?15,?16,
-                     ?17,?18,NULL,?19,3,?20)",
+                     ?17,?18,NULL,?19,3,?20,?21)",
             params![
                 purchase_id,
                 input.member_id,
@@ -349,7 +363,8 @@ pub(crate) fn purchase_package(
                 purchase_status,
                 now,
                 round_money(cash_payment_amount * compensation.base_commission_rate),
-                transaction_id
+                transaction_id,
+                input.note.trim()
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -381,9 +396,207 @@ pub(crate) fn purchase_package(
     snapshot_for_user(&connection, &operator)
 }
 
+#[tauri::command]
+pub(crate) fn refund_package(
+    token: String,
+    input: PackageRefundInput,
+    state: tauri::State<DatabaseState>,
+) -> Result<AppSnapshot, String> {
+    let manager = require_manager(&state, &token)?;
+    let mut connection = state
+        .connection
+        .lock()
+        .map_err(|_| "数据库锁定失败".to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let (
+        member_id,
+        member_name,
+        employee,
+        package_name,
+        price,
+        total_uses,
+        remaining_uses,
+        limit_type,
+        expires_at,
+        balance_payment_amount,
+        cash_payment_amount,
+        commission,
+        transaction_id,
+        refunded_at,
+    ): (
+        String,
+        String,
+        String,
+        String,
+        f64,
+        i64,
+        i64,
+        String,
+        Option<String>,
+        f64,
+        f64,
+        f64,
+        String,
+        Option<String>,
+    ) = transaction
+        .query_row(
+            "SELECT member_id,member_name,employee,package_name,price,
+                    total_uses,remaining_uses,limit_type,expires_at,balance_payment_amount,
+                    cash_payment_amount,commission,transaction_id,refunded_at
+             FROM package_purchases WHERE id=?1",
+            params![input.purchase_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                ))
+            },
+        )
+        .map_err(|_| "套餐购买记录不存在".to_string())?;
+    if refunded_at.is_some() {
+        return Err("该套餐已经退款，请勿重复操作".to_string());
+    }
+    if limit_type == "time" && !time_package_is_active(expires_at.as_deref(), Utc::now()) {
+        return Err("该时间套餐已经到期，不能发起退款".to_string());
+    }
+    let active_appointments: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM appointments WHERE package_purchase_id=?1
+             AND status IN ('pending','arrived','in_service')",
+            params![input.purchase_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if active_appointments > 0 {
+        return Err("该套餐存在未完成预约，请先处理预约后再退款".to_string());
+    }
+    let active_consumptions: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM package_consumptions
+             WHERE package_purchase_id=?1 AND status='active'",
+            params![input.purchase_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let consumed_count = if limit_type == "count" {
+        active_consumptions.max((total_uses - remaining_uses).max(0))
+    } else {
+        active_consumptions
+    };
+    if !input.single_original_price.is_finite() || input.single_original_price <= 0.0 {
+        return Err("请填写有效的单次原价".to_string());
+    }
+    let single_original_price = round_money(input.single_original_price);
+    let refund_amount = package_refund_amount(price, consumed_count, single_original_price);
+    let (refund_balance_amount, refund_cash_amount) =
+        split_refund_amount(price, refund_amount, balance_payment_amount);
+    if refund_cash_amount > cash_payment_amount + 0.01 {
+        return Err("退款支付拆分异常，请检查原支付记录".to_string());
+    }
+    let (principal_balance, gift_balance, total_consumption): (f64, f64, f64) = transaction
+        .query_row(
+            "SELECT principal_balance,gift_balance,total_consumption FROM members
+             WHERE id=?1 AND status='active'",
+            params![member_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "会员不存在或已停用，无法退款".to_string())?;
+    let principal_after = round_money(principal_balance + refund_balance_amount);
+    let balance_after = round_money(principal_after + gift_balance);
+    let refund_commission = if cash_payment_amount > 0.0 {
+        round_money(commission * refund_cash_amount / cash_payment_amount)
+    } else {
+        0.0
+    };
+    let now = Utc::now().to_rfc3339();
+    transaction
+        .execute(
+            "UPDATE members SET principal_balance=?1,balance=?2,total_consumption=?3,last_visit=?4
+             WHERE id=?5",
+            params![
+                principal_after,
+                balance_after,
+                round_money((total_consumption - refund_amount).max(0.0)),
+                now,
+                member_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "UPDATE package_purchases SET single_original_price=?1,
+             status='completed',refunded_at=?2,refund_amount=?3,refund_balance_amount=?4,
+             refund_cash_amount=?5 WHERE id=?6 AND refunded_at IS NULL",
+            params![
+                single_original_price,
+                now,
+                refund_amount,
+                refund_balance_amount,
+                refund_cash_amount,
+                input.purchase_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if !transaction_id.is_empty() {
+        transaction
+            .execute(
+                "UPDATE transactions SET note=note||?1 WHERE id=?2",
+                params![format!("；套餐已退款{refund_amount:.2}元"), transaction_id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO refund_records
+             (id,refund_type,member_id,member_name,package_purchase_id,amount,balance_amount,
+              cash_amount,gift_forfeited_amount,commission,employee,operator,balance_after,
+              created_at,note)
+             VALUES (?1,'package',?2,?3,?4,?5,?6,?7,0,?8,?9,?10,?11,?12,?13)",
+            params![
+                Uuid::new_v4().to_string(),
+                member_id,
+                member_name,
+                input.purchase_id,
+                refund_amount,
+                refund_balance_amount,
+                refund_cash_amount,
+                refund_commission,
+                employee,
+                manager.display_name,
+                balance_after,
+                now,
+                if input.note.trim().is_empty() {
+                    format!("套餐退款：{package_name}，已做{consumed_count}次")
+                } else {
+                    input.note.trim().to_string()
+                }
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    snapshot_for_user(&connection, &manager)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{package_service_details, resolve_payment_amounts, time_package_is_active};
+    use super::{
+        package_refund_amount, package_service_details, resolve_payment_amounts,
+        split_refund_amount, time_package_is_active,
+    };
     use crate::models::EmployeeCompensation;
     use chrono::{Duration, Utc};
 
@@ -454,6 +667,13 @@ mod tests {
         assert!(!time_package_is_active(Some(&past), now));
         assert!(!time_package_is_active(None, now));
     }
+
+    #[test]
+    fn package_refund_deducts_consumed_services_at_original_price() {
+        assert_eq!(package_refund_amount(1000.0, 3, 180.0), 460.0);
+        assert_eq!(package_refund_amount(1000.0, 8, 180.0), 0.0);
+        assert_eq!(split_refund_amount(1000.0, 460.0, 400.0), (184.0, 276.0));
+    }
 }
 
 #[tauri::command]
@@ -488,7 +708,7 @@ pub(crate) fn consume_package(
             "SELECT member_id,member_name,package_name,package_type,remaining_uses,
                     limit_type,expires_at
                  FROM package_purchases
-                 WHERE id=?1 AND status='active'",
+                 WHERE id=?1 AND status='active' AND refunded_at IS NULL",
             params![input.purchase_id],
             |row| {
                 Ok((

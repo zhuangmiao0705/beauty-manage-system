@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import 'element-plus/es/components/message-box/style/css'
 import type { FormInstance, FormRules } from 'element-plus'
-import { Eye, MinusCircle, PackagePlus, Search } from 'lucide-vue-next'
+import { Eye, MinusCircle, PackagePlus, RotateCcw, Search } from 'lucide-vue-next'
 import BaseModal from '../components/BaseModal.vue'
 import EmployeeSelect from '../components/EmployeeSelect.vue'
 import MemberSelect from '../components/MemberSelect.vue'
@@ -11,7 +11,13 @@ import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
 import { PACKAGE_PAYMENT_METHODS, PACKAGE_TYPES } from '../config/options'
 import { authStore } from '../auth'
-import { cancelService, consumePackage, purchasePackage, salonStore } from '../data/repository'
+import {
+  cancelService,
+  consumePackage,
+  purchasePackage,
+  refundPackage,
+  salonStore
+} from '../data/repository'
 import type {
   PackageConsumption,
   PackageConsumptionInput,
@@ -43,7 +49,7 @@ const purchaseFilterForm = reactive<PurchaseFilters>({
   status: ''
 })
 const appliedPurchaseFilters = reactive<PurchaseFilters>({ ...purchaseFilterForm })
-const modal = ref<'purchase' | 'consume' | 'flows' | null>(null)
+const modal = ref<'purchase' | 'consume' | 'flows' | 'refund' | null>(null)
 const saving = ref(false)
 const selectedPurchase = ref<PackagePurchase | null>(null)
 const purchaseFormRef = ref<FormInstance>()
@@ -55,7 +61,8 @@ const purchaseForm = reactive<PackagePurchaseInput>({
   activatedAt: '',
   paymentMethod: '会员余额',
   balancePaymentAmount: 0,
-  cashPaymentAmount: 0
+  cashPaymentAmount: 0,
+  note: ''
 })
 const consumeForm = reactive<PackageConsumptionInput>({
   purchaseId: '',
@@ -63,6 +70,7 @@ const consumeForm = reactive<PackageConsumptionInput>({
   duration: 60,
   note: ''
 })
+const refundForm = reactive({ singleOriginalPrice: 0, note: '' })
 const purchaseRules = computed<FormRules<PackagePurchaseInput>>(() => ({
   memberId: [{ required: true, message: '请选择会员', trigger: 'change' }],
   packageId: [{ required: true, message: '请选择套餐种类', trigger: 'change' }],
@@ -148,6 +156,36 @@ const timePackagePreview = computed(() => {
   const remainingDays = Math.max(0, Math.ceil((expiresAt.getTime() - Date.now()) / 86_400_000))
   return { elapsedDays, expiresAt, remainingDays }
 })
+const refundPreview = computed(() => {
+  const purchase = selectedPurchase.value
+  if (!purchase) return null
+  const activeCount = salonStore.packageConsumptions.filter(
+    item => item.purchaseId === purchase.id && item.status === 'active'
+  ).length
+  const consumedCount =
+    purchase.limitType === 'count'
+      ? Math.max(activeCount, purchase.totalUses - purchase.remainingUses)
+      : activeCount
+  const singleOriginalPrice = refundForm.singleOriginalPrice
+  const deduction = Math.round(consumedCount * singleOriginalPrice * 100) / 100
+  const amount = Math.max(0, Math.round((purchase.price - deduction) * 100) / 100)
+  const balanceAmount =
+    purchase.price > 0
+      ? Math.min(
+          amount,
+          purchase.balancePaymentAmount,
+          Math.round(((amount * purchase.balancePaymentAmount) / purchase.price) * 100) / 100
+        )
+      : 0
+  return {
+    consumedCount,
+    singleOriginalPrice,
+    deduction,
+    amount,
+    balanceAmount,
+    cashAmount: Math.round((amount - balanceAmount) * 100) / 100
+  }
+})
 
 watch(
   () => [purchaseForm.paymentMethod, purchaseForm.packageId, purchaseForm.balancePaymentAmount],
@@ -180,7 +218,8 @@ const filteredPurchases = computed(() =>
       item.packageType !== appliedPurchaseFilters.packageType
     )
       return false
-    if (appliedPurchaseFilters.status && item.status !== appliedPurchaseFilters.status) return false
+    const status = item.refundedAt ? 'refunded' : item.status
+    if (appliedPurchaseFilters.status && status !== appliedPurchaseFilters.status) return false
     return true
   })
 )
@@ -239,7 +278,8 @@ function openPurchase() {
     activatedAt: localDateTimeValue(),
     paymentMethod: '会员余额',
     balancePaymentAmount: 0,
-    cashPaymentAmount: 0
+    cashPaymentAmount: 0,
+    note: ''
   })
   modal.value = 'purchase'
 }
@@ -253,6 +293,26 @@ function openConsume(purchase: PackagePurchase) {
 function openFlows(purchase: PackagePurchase) {
   selectedPurchase.value = purchase
   modal.value = 'flows'
+}
+
+function isExpiredTimePackage(purchase: PackagePurchase) {
+  return (
+    purchase.limitType === 'time' &&
+    (!purchase.expiresAt || new Date(purchase.expiresAt).getTime() <= Date.now())
+  )
+}
+
+function openRefund(purchase: PackagePurchase) {
+  if (isExpiredTimePackage(purchase)) {
+    notify('该时间套餐已经到期，不能发起退款', 'error')
+    return
+  }
+  selectedPurchase.value = purchase
+  Object.assign(refundForm, {
+    singleOriginalPrice: 0,
+    note: ''
+  })
+  modal.value = 'refund'
 }
 
 async function submitPurchase() {
@@ -315,6 +375,48 @@ async function cancelConsumption(consumption: PackageConsumption) {
   } catch (reason) {
     if (reason === 'cancel' || reason === 'close') return
     notify(errorMessage(reason, '撤销失败'), 'error')
+  }
+}
+
+async function submitPackageRefund() {
+  const purchase = selectedPurchase.value
+  const preview = refundPreview.value
+  if (!purchase || !preview) return
+  if (!Number.isFinite(preview.singleOriginalPrice) || preview.singleOriginalPrice <= 0) {
+    notify('请填写大于 0 的单次原价', 'error')
+    return
+  }
+  const details = [
+    `确认退款 ${currency(preview.amount)} 吗？`,
+    preview.balanceAmount > 0 ? `${currency(preview.balanceAmount)}将退回会员本金余额。` : '',
+    preview.cashAmount > 0 ? `${currency(preview.cashAmount)}需线下退还顾客。` : '',
+    '退款后套餐将终止，剩余权益作废，此操作不可撤销。'
+  ]
+    .filter(Boolean)
+    .join('\n')
+  try {
+    await ElMessageBox.confirm(details, '二次确认套餐退款', {
+      type: 'warning',
+      confirmButtonText: `确认退款 ${currency(preview.amount)}`,
+      cancelButtonText: '取消',
+      dangerouslyUseHTMLString: false
+    })
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    await refundPackage({
+      purchaseId: purchase.id,
+      singleOriginalPrice: preview.singleOriginalPrice,
+      note: refundForm.note
+    })
+    modal.value = null
+    notify(`套餐退款已登记，本次退款 ${currency(preview.amount)}`)
+  } catch (reason) {
+    notify(errorMessage(reason, '退款失败'), 'error')
+  } finally {
+    saving.value = false
   }
 }
 </script>
@@ -385,6 +487,7 @@ async function cancelConsumption(consumption: PackageConsumption) {
           >
             <el-option label="使用中" value="active" />
             <el-option label="已结束" value="completed" />
+            <el-option label="已退款" value="refunded" />
           </el-select>
         </label>
         <div class="service-filter-actions">
@@ -436,19 +539,25 @@ async function cancelConsumption(consumption: PackageConsumption) {
             {{ row.lastConsumedAt ? fullDateTime(row.lastConsumedAt) : '--' }}
           </template>
         </el-table-column>
+        <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.note || '--' }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-tag round :type="row.status === 'active' ? 'success' : 'info'">
-              {{ row.status === 'active' ? '使用中' : '已结束' }}
+            <el-tag
+              round
+              :type="row.refundedAt ? 'danger' : row.status === 'active' ? 'success' : 'info'"
+            >
+              {{ row.refundedAt ? '已退款' : row.status === 'active' ? '使用中' : '已结束' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="270" fixed="right">
           <template #default="{ row }">
             <div class="element-row-actions">
               <el-button
                 size="small"
-                :disabled="row.status !== 'active'"
+                :disabled="row.status !== 'active' || Boolean(row.refundedAt)"
                 @click="openConsume(row as PackagePurchase)"
               >
                 <MinusCircle :size="14" />
@@ -457,6 +566,20 @@ async function cancelConsumption(consumption: PackageConsumption) {
               <el-button size="small" @click="openFlows(row as PackagePurchase)">
                 <Eye :size="14" />
                 查看流水
+              </el-button>
+              <el-button
+                v-if="authStore.user?.role === 'manager'"
+                size="small"
+                type="danger"
+                plain
+                :disabled="Boolean(row.refundedAt) || isExpiredTimePackage(row as PackagePurchase)"
+                :title="
+                  isExpiredTimePackage(row as PackagePurchase) ? '时间套餐已到期，不能退款' : ''
+                "
+                @click="openRefund(row as PackagePurchase)"
+              >
+                <RotateCcw :size="14" />
+                退款
               </el-button>
             </div>
           </template>
@@ -539,6 +662,16 @@ async function cancelConsumption(consumption: PackageConsumption) {
           <el-form-item label="现金支付金额" prop="cashPaymentAmount">
             <el-input :model-value="currency(purchaseForm.cashPaymentAmount)" disabled />
           </el-form-item>
+          <el-form-item class="span-2" label="备注">
+            <el-input
+              v-model="purchaseForm.note"
+              type="textarea"
+              :rows="3"
+              maxlength="200"
+              show-word-limit
+              placeholder="选填"
+            />
+          </el-form-item>
         </div>
       </el-form>
       <div v-if="selectedPackage && selectedMember" class="form-tip">
@@ -606,9 +739,7 @@ async function cancelConsumption(consumption: PackageConsumption) {
       </div>
       <template #footer>
         <el-button @click="modal = null">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitConsumption">
-          下一步确认
-        </el-button>
+        <el-button type="primary" :loading="saving" @click="submitConsumption">确认</el-button>
       </template>
     </BaseModal>
 
@@ -651,7 +782,7 @@ async function cancelConsumption(consumption: PackageConsumption) {
               size="small"
               type="danger"
               plain
-              :disabled="row.status !== 'active'"
+              :disabled="row.status !== 'active' || Boolean(selectedPurchase?.refundedAt)"
               @click="cancelConsumption(row as PackageConsumption)"
             >
               撤销
@@ -664,6 +795,70 @@ async function cancelConsumption(consumption: PackageConsumption) {
         v-model:page-size="flowPageSize"
         :total="consumptionFlows.length"
       />
+    </BaseModal>
+
+    <BaseModal
+      v-if="modal === 'refund' && selectedPurchase && refundPreview"
+      title="套餐退款"
+      :subtitle="`${selectedPurchase.memberName} · ${selectedPurchase.packageName}`"
+      @close="modal = null"
+    >
+      <div class="detail-metrics">
+        <div>
+          <span>套餐实付</span>
+          <strong>{{ currency(selectedPurchase.price) }}</strong>
+        </div>
+        <div>
+          <span>有效消费次数</span>
+          <strong>{{ refundPreview.consumedCount }} 次</strong>
+        </div>
+        <div>
+          <span>已消费扣款</span>
+          <strong>{{ currency(refundPreview.deduction) }}</strong>
+        </div>
+        <div>
+          <span>本次退款金额</span>
+          <strong class="money">{{ currency(refundPreview.amount) }}</strong>
+        </div>
+        <div>
+          <span>退回本金余额</span>
+          <strong>{{ currency(refundPreview.balanceAmount) }}</strong>
+        </div>
+        <div>
+          <span>线下退款</span>
+          <strong>{{ currency(refundPreview.cashAmount) }}</strong>
+        </div>
+      </div>
+      <el-form label-position="top" style="margin-top: 10px">
+        <div class="form-grid">
+          <el-form-item class="span-2" label="单次原价" required>
+            <el-input-number
+              v-model="refundForm.singleOriginalPrice"
+              :precision="2"
+              :controls="false"
+              align="left"
+            />
+            <div class="form-tip">请根据本次退款依据手动填写，已消费次数将按此价格扣除。</div>
+          </el-form-item>
+          <el-form-item class="span-2" label="退款备注">
+            <el-input
+              v-model="refundForm.note"
+              type="textarea"
+              :rows="3"
+              maxlength="200"
+              show-word-limit
+              placeholder="选填"
+            />
+          </el-form-item>
+        </div>
+      </el-form>
+      <div class="form-tip">
+        退款金额＝套餐实付－有效消费次数×单次原价。退款后套餐立即终止，剩余权益作废。
+      </div>
+      <template #footer>
+        <el-button @click="modal = null">取消</el-button>
+        <el-button type="danger" :loading="saving" @click="submitPackageRefund">确认退款</el-button>
+      </template>
     </BaseModal>
   </div>
 </template>

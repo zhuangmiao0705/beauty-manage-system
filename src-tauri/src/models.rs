@@ -47,6 +47,7 @@ pub(crate) struct AppSnapshot {
     pub(crate) packages: Vec<PackageDefinition>,
     pub(crate) package_purchases: Vec<PackagePurchase>,
     pub(crate) package_consumptions: Vec<PackageConsumption>,
+    pub(crate) refund_records: Vec<RefundRecord>,
     pub(crate) appointments: Vec<Appointment>,
 }
 
@@ -59,6 +60,7 @@ pub(crate) struct Member {
     pub(crate) balance: f64,
     pub(crate) principal_balance: f64,
     pub(crate) gift_balance: f64,
+    pub(crate) refundable_principal: f64,
     pub(crate) total_recharge: f64,
     pub(crate) total_consumption: f64,
     pub(crate) join_date: String,
@@ -209,6 +211,7 @@ pub(crate) struct PackagePurchase {
     pub(crate) package_name: String,
     pub(crate) package_type: String,
     pub(crate) price: f64,
+    pub(crate) single_original_price: Option<f64>,
     pub(crate) total_uses: i64,
     pub(crate) remaining_uses: i64,
     pub(crate) limit_type: String,
@@ -224,6 +227,11 @@ pub(crate) struct PackagePurchase {
     pub(crate) commission: f64,
     pub(crate) commission_rule_version: i64,
     pub(crate) transaction_id: String,
+    pub(crate) refunded_at: Option<String>,
+    pub(crate) refund_amount: f64,
+    pub(crate) refund_balance_amount: f64,
+    pub(crate) refund_cash_amount: f64,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -239,6 +247,26 @@ pub(crate) struct PackageConsumption {
     pub(crate) service_id: String,
     pub(crate) status: String,
     pub(crate) cancelled_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RefundRecord {
+    pub(crate) id: String,
+    pub(crate) refund_type: String,
+    pub(crate) member_id: String,
+    pub(crate) member_name: String,
+    pub(crate) package_purchase_id: Option<String>,
+    pub(crate) amount: f64,
+    pub(crate) balance_amount: f64,
+    pub(crate) cash_amount: f64,
+    pub(crate) gift_forfeited_amount: f64,
+    pub(crate) commission: f64,
+    pub(crate) employee: String,
+    pub(crate) operator: String,
+    pub(crate) balance_after: f64,
+    pub(crate) created_at: String,
+    pub(crate) note: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -387,6 +415,23 @@ pub(crate) struct PackageDefinitionInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PackageRefundInput {
+    pub(crate) purchase_id: String,
+    pub(crate) single_original_price: f64,
+    #[serde(default)]
+    pub(crate) note: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountRefundInput {
+    pub(crate) member_id: String,
+    #[serde(default)]
+    pub(crate) note: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PackagePurchaseInput {
     pub(crate) member_id: String,
     pub(crate) employee: String,
@@ -398,6 +443,8 @@ pub(crate) struct PackagePurchaseInput {
     pub(crate) balance_payment_amount: f64,
     #[serde(default)]
     pub(crate) cash_payment_amount: f64,
+    #[serde(default)]
+    pub(crate) note: String,
 }
 
 fn default_service_duration() -> i64 {

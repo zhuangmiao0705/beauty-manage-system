@@ -18,7 +18,11 @@ type EmployeeForm = Omit<EmployeeInput, 'baseCommissionRate' | 'excessCommission
 }
 
 const activeTab = ref<'employees' | 'accounts'>('employees')
-const employeeFilters = reactive({ name: '', role: '' })
+const employeeFilters = reactive<{ name: string; role: string; status: Employee['status'] | '' }>({
+  name: '',
+  role: '',
+  status: 'active'
+})
 const accountFilters = reactive({ username: '', displayName: '' })
 const modal = ref<'employee' | 'account' | 'reset' | null>(null)
 const saving = ref(false)
@@ -90,7 +94,8 @@ const filteredEmployees = computed(() =>
     const name = employeeFilters.name.trim()
     return (
       (!name || item.name.includes(name)) &&
-      (!employeeFilters.role || item.role === employeeFilters.role)
+      (!employeeFilters.role || item.role === employeeFilters.role) &&
+      (!employeeFilters.status || item.status === employeeFilters.status)
     )
   })
 )
@@ -281,6 +286,18 @@ async function submitReset() {
               placeholder="请选择岗位"
             >
               <el-option v-for="role in EMPLOYEE_ROLES" :key="role" :label="role" :value="role" />
+            </el-select>
+          </label>
+          <label class="table-filter-field">
+            <span>员工状态</span>
+            <el-select
+              v-model="employeeFilters.status"
+              clearable
+              class="table-filter-select"
+              placeholder="全部状态"
+            >
+              <el-option label="在职" value="active" />
+              <el-option label="停用" value="inactive" />
             </el-select>
           </label>
         </template>

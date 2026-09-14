@@ -142,6 +142,150 @@ pub(crate) fn round_money(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+fn cleanup_default_employees(connection: &Connection, now: &str) -> Result<(), String> {
+    let defaults = [
+        ("e1", "林晓雅"),
+        ("e2", "周可欣"),
+        ("e3", "陈思思"),
+        ("e4", "王小曼"),
+    ];
+    for (employee_id, employee_name) in defaults {
+        let exists: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM employees WHERE id=?1 AND name=?2",
+                params![employee_id, employee_name],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if exists == 0 {
+            continue;
+        }
+        let used: i64 = connection
+            .query_row(
+                "SELECT CASE WHEN
+                   EXISTS(SELECT 1 FROM transactions WHERE employee=?1) OR
+                   EXISTS(SELECT 1 FROM services WHERE employee=?1) OR
+                   EXISTS(SELECT 1 FROM package_purchases WHERE employee=?1) OR
+                   EXISTS(SELECT 1 FROM package_consumptions WHERE employee=?1) OR
+                   EXISTS(SELECT 1 FROM appointments WHERE employee=?1) OR
+                   EXISTS(SELECT 1 FROM attendance_records WHERE employee_id=?2) OR
+                   EXISTS(SELECT 1 FROM accounts WHERE employee_id=?2)
+                 THEN 1 ELSE 0 END",
+                params![employee_name, employee_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if used != 0 {
+            connection
+                .execute(
+                    "UPDATE employees SET status='inactive' WHERE id=?1 AND name=?2",
+                    params![employee_id, employee_name],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "INSERT INTO employee_status_events
+                     (id,employee_id,employee_name,status,effective_at)
+                     SELECT ?1,?2,?3,'inactive',?4 WHERE NOT EXISTS
+                     (SELECT 1 FROM employee_status_events
+                      WHERE employee_id=?2 AND status='inactive')",
+                    params![Uuid::new_v4().to_string(), employee_id, employee_name, now],
+                )
+                .map_err(|error| error.to_string())?;
+        } else {
+            connection
+                .execute(
+                    "DELETE FROM employee_compensations WHERE employee_id=?1",
+                    params![employee_id],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "DELETE FROM employee_status_events WHERE employee_id=?1",
+                    params![employee_id],
+                )
+                .map_err(|error| error.to_string())?;
+            connection
+                .execute(
+                    "DELETE FROM employees WHERE id=?1 AND name=?2",
+                    params![employee_id, employee_name],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn calculate_refundable_principal(
+    total_recharge: f64,
+    principal_balance: f64,
+    account_spending: f64,
+    principal_returns: f64,
+    prior_account_refunds: f64,
+) -> f64 {
+    round_money(
+        (total_recharge + principal_returns - account_spending - prior_account_refunds)
+            .max(0.0)
+            .min(principal_balance.max(0.0)),
+    )
+}
+
+pub(crate) fn refundable_principal_for_member(
+    connection: &Connection,
+    member_id: &str,
+    total_recharge: f64,
+    principal_balance: f64,
+) -> Result<f64, String> {
+    let service_spending: f64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(balance_payment_amount),0) FROM services
+             WHERE member_id=?1 AND status='completed'",
+            params![member_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let package_spending: f64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(balance_payment_amount),0) FROM package_purchases
+             WHERE member_id=?1",
+            params![member_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let legacy_spending: f64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM transactions
+             WHERE member_id=?1 AND type='consume' AND status='active'
+               AND source_type='legacy' AND payment_method='会员余额'",
+            params![member_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let principal_returns: f64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(balance_amount),0) FROM refund_records
+             WHERE member_id=?1 AND refund_type='package'",
+            params![member_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let prior_account_refunds: f64 = connection
+        .query_row(
+            "SELECT COALESCE(SUM(amount),0) FROM refund_records
+             WHERE member_id=?1 AND refund_type='account'",
+            params![member_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(calculate_refundable_principal(
+        total_recharge,
+        principal_balance,
+        round_money(service_spending + package_spending + legacy_spending),
+        principal_returns,
+        prior_account_refunds,
+    ))
+}
+
 pub(crate) fn validate_active_employee(
     connection: &Connection,
     employee: &str,
@@ -319,6 +463,7 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                id TEXT PRIMARY KEY,
                name TEXT NOT NULL UNIQUE,
                price REAL NOT NULL CHECK(price>=0),
+               single_original_price REAL NOT NULL DEFAULT 0 CHECK(single_original_price>=0),
                total_uses INTEGER NOT NULL CHECK(total_uses>0),
                limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time')),
                validity_days INTEGER NOT NULL DEFAULT 0 CHECK(validity_days>=0),
@@ -337,6 +482,7 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                package_name TEXT NOT NULL,
                package_type TEXT NOT NULL DEFAULT '套盒' CHECK(package_type IN ('套盒','普通')),
                price REAL NOT NULL CHECK(price>=0),
+               single_original_price REAL CHECK(single_original_price>0),
                total_uses INTEGER NOT NULL CHECK(total_uses>0),
                remaining_uses INTEGER NOT NULL CHECK(remaining_uses>=0),
                limit_type TEXT NOT NULL DEFAULT 'count' CHECK(limit_type IN ('count','time')),
@@ -351,7 +497,12 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                last_consumed_at TEXT,
                commission REAL NOT NULL DEFAULT 0,
                commission_rule_version INTEGER NOT NULL DEFAULT 2,
-               transaction_id TEXT NOT NULL DEFAULT ''
+               transaction_id TEXT NOT NULL DEFAULT '',
+               refunded_at TEXT,
+               refund_amount REAL NOT NULL DEFAULT 0 CHECK(refund_amount>=0),
+               refund_balance_amount REAL NOT NULL DEFAULT 0 CHECK(refund_balance_amount>=0),
+               refund_cash_amount REAL NOT NULL DEFAULT 0 CHECK(refund_cash_amount>=0),
+               note TEXT NOT NULL DEFAULT ''
              );
 
              CREATE TABLE IF NOT EXISTS package_consumptions (
@@ -1232,6 +1383,112 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
 
+    let default_employee_cleanup_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=15",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if default_employee_cleanup_applied == 0 {
+        cleanup_default_employees(connection, &now)?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (15,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS refund_records (
+               id TEXT PRIMARY KEY,
+               refund_type TEXT NOT NULL CHECK(refund_type IN ('package','account')),
+               member_id TEXT NOT NULL REFERENCES members(id),
+               member_name TEXT NOT NULL,
+               package_purchase_id TEXT REFERENCES package_purchases(id),
+               amount REAL NOT NULL CHECK(amount>=0),
+               balance_amount REAL NOT NULL DEFAULT 0 CHECK(balance_amount>=0),
+               cash_amount REAL NOT NULL DEFAULT 0 CHECK(cash_amount>=0),
+               gift_forfeited_amount REAL NOT NULL DEFAULT 0 CHECK(gift_forfeited_amount>=0),
+               commission REAL NOT NULL DEFAULT 0 CHECK(commission>=0),
+               employee TEXT NOT NULL DEFAULT '',
+               operator TEXT NOT NULL,
+               balance_after REAL NOT NULL DEFAULT 0 CHECK(balance_after>=0),
+               created_at TEXT NOT NULL,
+               note TEXT NOT NULL DEFAULT ''
+             );
+             CREATE INDEX IF NOT EXISTS idx_refunds_member
+               ON refund_records(member_id,created_at);
+             CREATE INDEX IF NOT EXISTS idx_refunds_package
+               ON refund_records(package_purchase_id);",
+        )
+        .map_err(|error| error.to_string())?;
+
+    add_column(
+        connection,
+        "packages",
+        "single_original_price REAL NOT NULL DEFAULT 0 CHECK(single_original_price>=0)",
+    )?;
+    add_column(
+        connection,
+        "package_purchases",
+        "single_original_price REAL CHECK(single_original_price>0)",
+    )?;
+    add_column(connection, "package_purchases", "refunded_at TEXT")?;
+    add_column(
+        connection,
+        "package_purchases",
+        "refund_amount REAL NOT NULL DEFAULT 0 CHECK(refund_amount>=0)",
+    )?;
+    add_column(
+        connection,
+        "package_purchases",
+        "refund_balance_amount REAL NOT NULL DEFAULT 0 CHECK(refund_balance_amount>=0)",
+    )?;
+    add_column(
+        connection,
+        "package_purchases",
+        "refund_cash_amount REAL NOT NULL DEFAULT 0 CHECK(refund_cash_amount>=0)",
+    )?;
+    let refund_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=16",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if refund_migration_applied == 0 {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (16,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    add_column(
+        connection,
+        "package_purchases",
+        "note TEXT NOT NULL DEFAULT ''",
+    )?;
+    let package_purchase_note_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=17",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if package_purchase_note_migration_applied == 0 {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (17,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
     connection
         .execute(
             "UPDATE accounts SET display_name='木子店长' WHERE username='admin' AND display_name='慕姿店长'",
@@ -1241,44 +1498,6 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
     connection
         .execute("UPDATE accounts SET must_change_password=0", [])
         .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-pub(crate) fn seed_employees(connection: &Connection) -> Result<(), String> {
-    let employees = [
-        ("e1", "林晓雅", "高级美容师", "#d86c83"),
-        ("e2", "周可欣", "美容顾问", "#aa7dce"),
-        ("e3", "陈思思", "美容师", "#e7a95f"),
-        ("e4", "王小曼", "美容师", "#65a99b"),
-    ];
-    let now = Utc::now().to_rfc3339();
-    for employee in employees {
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO employees (id,name,role,commission_rate,status,color,created_at)
-                 VALUES (?1,?2,?3,0,'active',?4,?5)",
-                params![employee.0, employee.1, employee.2, employee.3, now],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "INSERT INTO employee_status_events(id,employee_id,employee_name,status,effective_at)
-                 SELECT ?1,?2,?3,'active',?4 WHERE NOT EXISTS
-                 (SELECT 1 FROM employee_status_events WHERE employee_id=?2)",
-                params![Uuid::new_v4().to_string(), employee.0, employee.1, now],
-            )
-            .map_err(|error| error.to_string())?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO employee_compensations
-                 (employee_id,base_salary,base_commission_rate,performance_target,
-                  excess_commission_rate,meal_allowance_per_day,attendance_bonus,
-                  normal_service_commission,package_service_commission,created_at)
-                 VALUES (?1,1800,0.10,10000,0.02,10,300,5,10,?2)",
-                params![employee.0, now],
-            )
-            .map_err(|error| error.to_string())?;
-    }
     Ok(())
 }
 
@@ -1303,7 +1522,6 @@ pub(crate) fn seed_default_manager(connection: &Connection) -> Result<(), String
 pub(crate) fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
     let connection = Connection::open(path).map_err(|error| error.to_string())?;
     migrate_database(&connection)?;
-    seed_employees(&connection)?;
     seed_default_manager(&connection)?;
     Ok(connection)
 }
@@ -1349,7 +1567,7 @@ pub(crate) fn list_accounts(connection: &Connection) -> Result<Vec<AccountRecord
 }
 
 pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
-    let members = {
+    let mut members = {
         let mut statement = connection.prepare("SELECT id,name,phone,balance,principal_balance,gift_balance,total_recharge,total_consumption,join_date,last_visit,status FROM members ORDER BY join_date DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
@@ -1360,6 +1578,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     balance: row.get(3)?,
                     principal_balance: row.get(4)?,
                     gift_balance: row.get(5)?,
+                    refundable_principal: 0.0,
                     total_recharge: row.get(6)?,
                     total_consumption: row.get(7)?,
                     join_date: row.get(8)?,
@@ -1371,6 +1590,14 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
     };
+    for member in &mut members {
+        member.refundable_principal = refundable_principal_for_member(
+            connection,
+            &member.id,
+            member.total_recharge,
+            member.principal_balance,
+        )?;
+    }
     let transactions = {
         let mut statement = connection.prepare("SELECT id,member_id,member_name,type,amount,gift_amount,balance_after,payment_method,item,employee,commission,commission_rule_version,created_at,note,status,source_type,source_id FROM transactions ORDER BY created_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
@@ -1574,7 +1801,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let package_purchases = {
-        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,single_original_price,total_uses,remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id,refunded_at,refund_amount,refund_balance_amount,refund_cash_amount,note FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackagePurchase {
@@ -1586,30 +1813,36 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     package_name: row.get(5)?,
                     package_type: row.get(6)?,
                     price: row.get(7)?,
-                    total_uses: row.get(8)?,
-                    remaining_uses: row.get(9)?,
-                    limit_type: row.get(10)?,
-                    validity_days: row.get(11)?,
-                    activated_at: row.get(12)?,
-                    expires_at: row.get(13)?,
-                    payment_method: row.get(14)?,
-                    balance_payment_amount: row.get(15)?,
-                    cash_payment_amount: row.get(16)?,
-                    status: if row.get::<_, String>(17)? == "active"
-                        && row.get::<_, String>(10)? == "time"
+                    single_original_price: row.get(8)?,
+                    total_uses: row.get(9)?,
+                    remaining_uses: row.get(10)?,
+                    limit_type: row.get(11)?,
+                    validity_days: row.get(12)?,
+                    activated_at: row.get(13)?,
+                    expires_at: row.get(14)?,
+                    payment_method: row.get(15)?,
+                    balance_payment_amount: row.get(16)?,
+                    cash_payment_amount: row.get(17)?,
+                    status: if row.get::<_, String>(18)? == "active"
+                        && row.get::<_, String>(11)? == "time"
                         && row
-                            .get::<_, Option<String>>(13)?
+                            .get::<_, Option<String>>(14)?
                             .is_some_and(|expires_at| expires_at <= Utc::now().to_rfc3339())
                     {
                         "completed".to_string()
                     } else {
-                        row.get(17)?
+                        row.get(18)?
                     },
-                    purchased_at: row.get(18)?,
-                    last_consumed_at: row.get(19)?,
-                    commission: row.get(20)?,
-                    commission_rule_version: row.get(21)?,
-                    transaction_id: row.get(22)?,
+                    purchased_at: row.get(19)?,
+                    last_consumed_at: row.get(20)?,
+                    commission: row.get(21)?,
+                    commission_rule_version: row.get(22)?,
+                    transaction_id: row.get(23)?,
+                    refunded_at: row.get(24)?,
+                    refund_amount: row.get(25)?,
+                    refund_balance_amount: row.get(26)?,
+                    refund_cash_amount: row.get(27)?,
+                    note: row.get(28)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1631,6 +1864,32 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     service_id: row.get(7)?,
                     status: row.get(8)?,
                     cancelled_at: row.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    let refund_records = {
+        let mut statement = connection.prepare("SELECT id,refund_type,member_id,member_name,package_purchase_id,amount,balance_amount,cash_amount,gift_forfeited_amount,commission,employee,operator,balance_after,created_at,note FROM refund_records ORDER BY created_at DESC,id").map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(RefundRecord {
+                    id: row.get(0)?,
+                    refund_type: row.get(1)?,
+                    member_id: row.get(2)?,
+                    member_name: row.get(3)?,
+                    package_purchase_id: row.get(4)?,
+                    amount: row.get(5)?,
+                    balance_amount: row.get(6)?,
+                    cash_amount: row.get(7)?,
+                    gift_forfeited_amount: row.get(8)?,
+                    commission: row.get(9)?,
+                    employee: row.get(10)?,
+                    operator: row.get(11)?,
+                    balance_after: row.get(12)?,
+                    created_at: row.get(13)?,
+                    note: row.get(14)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1687,6 +1946,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
         packages,
         package_purchases,
         package_consumptions,
+        refund_records,
         appointments,
     })
 }
@@ -1708,6 +1968,9 @@ pub(crate) fn snapshot_for_user(
             .iter_mut()
             .for_each(|item| item.commission = 0.0);
         data.package_purchases
+            .iter_mut()
+            .for_each(|item| item.commission = 0.0);
+        data.refund_records
             .iter_mut()
             .for_each(|item| item.commission = 0.0);
     }
@@ -1745,10 +2008,72 @@ mod tests {
     }
 
     #[test]
+    fn refundable_principal_deducts_all_account_spending_without_double_counting() {
+        assert_eq!(
+            calculate_refundable_principal(1000.0, 900.0, 300.0, 0.0, 0.0),
+            700.0
+        );
+        assert_eq!(
+            calculate_refundable_principal(1500.0, 500.0, 900.0, 300.0, 400.0),
+            500.0
+        );
+        assert_eq!(
+            calculate_refundable_principal(1000.0, 1000.0, 1200.0, 0.0, 0.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn default_employee_cleanup_deletes_unused_and_deactivates_used_records() {
+        let connection = Connection::open_in_memory().expect("open database");
+        migrate_database(&connection).expect("initialize database");
+        connection
+            .execute_batch(
+                "DELETE FROM schema_migrations WHERE version=15;
+                 INSERT INTO employees(id,name,role,commission_rate,status,color,created_at)
+                 VALUES ('e1','林晓雅','美容师',0,'active','#000','2026-01-01T00:00:00Z'),
+                        ('e2','周可欣','美容师',0,'active','#000','2026-01-01T00:00:00Z'),
+                        ('manual','陈思思','美容师',0,'active','#000','2026-01-01T00:00:00Z');
+                 INSERT INTO members
+                   (id,name,phone,balance,principal_balance,gift_balance,total_recharge,
+                    total_consumption,join_date,last_visit,status)
+                 VALUES ('m','会员','138',100,100,0,100,0,
+                         '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','active');
+                 INSERT INTO transactions
+                   (id,member_id,member_name,type,amount,balance_after,payment_method,item,
+                    employee,created_at,note,gift_amount,commission,commission_rule_version,
+                    status,source_type)
+                 VALUES ('t','m','会员','recharge',100,100,'现金','充值','周可欣',
+                         '2026-01-01T00:00:00Z','',0,0,2,'active','legacy');",
+            )
+            .expect("prepare default employees");
+        migrate_database(&connection).expect("clean default employees");
+        let unused_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM employees WHERE id='e1'", [], |row| {
+                row.get(0)
+            })
+            .expect("unused employee count");
+        let used_status: String = connection
+            .query_row("SELECT status FROM employees WHERE id='e2'", [], |row| {
+                row.get(0)
+            })
+            .expect("used employee status");
+        let manual_status: String = connection
+            .query_row(
+                "SELECT status FROM employees WHERE id='manual'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("manual employee status");
+        assert_eq!(unused_count, 0);
+        assert_eq!(used_status, "inactive");
+        assert_eq!(manual_status, "active");
+    }
+
+    #[test]
     fn migration_is_idempotent_on_a_new_database() {
         let connection = Connection::open_in_memory().expect("open database");
         migrate_database(&connection).expect("first migration");
-        seed_employees(&connection).expect("seed employees");
         connection
             .execute_batch(
                 "INSERT INTO members
@@ -1772,10 +2097,10 @@ mod tests {
             .expect("zero-price package should be persisted");
         migrate_database(&connection).expect("second migration");
         let data = snapshot(&connection).expect("snapshot");
-        assert_eq!(data.employees.len(), 4);
+        assert!(data.employees.is_empty());
         assert!(!data.commission_configs.is_empty());
-        assert_eq!(data.employee_status_events.len(), 4);
-        assert_eq!(data.employee_compensations.len(), 4);
+        assert!(data.employee_status_events.is_empty());
+        assert!(data.employee_compensations.is_empty());
         assert_eq!(data.packages[0].price, 0.0);
         assert_eq!(data.package_purchases[0].price, 0.0);
         assert!(!column_exists(&connection, "members", "level").expect("member schema"));

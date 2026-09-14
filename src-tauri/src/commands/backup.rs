@@ -1,6 +1,6 @@
 use crate::{
     commands::auth::require_manager,
-    database::{migrate_database, seed_default_manager, seed_employees, snapshot},
+    database::{migrate_database, seed_default_manager, snapshot},
     models::AppSnapshot,
     state::DatabaseState,
 };
@@ -119,7 +119,6 @@ pub(crate) fn restore_latest_backup(
         .map_err(|error| error.to_string())?;
     drop(backup);
     migrate_database(&connection)?;
-    seed_employees(&connection)?;
     seed_default_manager(&connection)?;
     snapshot(&connection)
 }

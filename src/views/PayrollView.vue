@@ -17,12 +17,24 @@ import type { AppSnapshot, Employee, EmployeeSalaryRow } from '../types'
 import { currency, fullDateTime, localMonthKey } from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
 
-type SalaryFilters = { employeeName: string; month: string }
+type SalaryFilters = {
+  employeeName: string
+  employeeStatus: Employee['status'] | ''
+  month: string
+}
 
 const activeTab = ref<'salary' | 'attendance'>('salary')
-const salaryFilterForm = reactive<SalaryFilters>({ employeeName: '', month: localMonthKey() })
+const salaryFilterForm = reactive<SalaryFilters>({
+  employeeName: '',
+  employeeStatus: 'active',
+  month: localMonthKey()
+})
 const appliedSalaryFilters = reactive<SalaryFilters>({ ...salaryFilterForm })
-const attendanceFilterForm = reactive<SalaryFilters>({ employeeName: '', month: localMonthKey() })
+const attendanceFilterForm = reactive<SalaryFilters>({
+  employeeName: '',
+  employeeStatus: 'active',
+  month: localMonthKey()
+})
 const appliedAttendanceFilters = reactive<SalaryFilters>({ ...attendanceFilterForm })
 const attendanceDrafts = reactive<Record<string, number>>({})
 const savingAttendance = ref('')
@@ -34,14 +46,23 @@ const snapshot = salonStore as unknown as AppSnapshot
 const salaryRows = computed(() =>
   buildSalaryRows(snapshot, appliedSalaryFilters.month).filter(item => {
     const name = appliedSalaryFilters.employeeName.trim()
-    return !name || item.name.includes(name)
+    const employee = salonStore.employees.find(employeeItem => employeeItem.id === item.employeeId)
+    return (
+      (!name || item.name.includes(name)) &&
+      (!appliedSalaryFilters.employeeStatus ||
+        employee?.status === appliedSalaryFilters.employeeStatus)
+    )
   })
 )
 const attendanceRows = computed(() =>
   salonStore.employees
     .filter(employee => {
       const name = appliedAttendanceFilters.employeeName.trim()
-      return !name || employee.name.includes(name)
+      return (
+        (!name || employee.name.includes(name)) &&
+        (!appliedAttendanceFilters.employeeStatus ||
+          employee.status === appliedAttendanceFilters.employeeStatus)
+      )
     })
     .map(employee => ({
       ...employee,
@@ -112,7 +133,11 @@ function querySalary() {
 }
 
 function resetSalary() {
-  Object.assign(salaryFilterForm, { employeeName: '', month: localMonthKey() })
+  Object.assign(salaryFilterForm, {
+    employeeName: '',
+    employeeStatus: 'active',
+    month: localMonthKey()
+  })
   querySalary()
 }
 
@@ -122,7 +147,11 @@ function queryAttendance() {
 }
 
 function resetAttendance() {
-  Object.assign(attendanceFilterForm, { employeeName: '', month: localMonthKey() })
+  Object.assign(attendanceFilterForm, {
+    employeeName: '',
+    employeeStatus: 'active',
+    month: localMonthKey()
+  })
   queryAttendance()
 }
 
@@ -189,6 +218,18 @@ loadAttendanceDrafts()
             placeholder="请选择月份"
             :clearable="false"
           />
+        </label>
+        <label class="table-filter-field">
+          <span>员工状态</span>
+          <el-select
+            v-model="salaryFilterForm.employeeStatus"
+            clearable
+            class="table-filter-select"
+            placeholder="全部状态"
+          >
+            <el-option label="在职" value="active" />
+            <el-option label="停用" value="inactive" />
+          </el-select>
         </label>
         <div class="service-filter-actions">
           <el-button type="primary" @click="querySalary">
@@ -297,6 +338,18 @@ loadAttendanceDrafts()
             placeholder="请选择月份"
             :clearable="false"
           />
+        </label>
+        <label class="table-filter-field">
+          <span>员工状态</span>
+          <el-select
+            v-model="attendanceFilterForm.employeeStatus"
+            clearable
+            class="table-filter-select"
+            placeholder="全部状态"
+          >
+            <el-option label="在职" value="active" />
+            <el-option label="停用" value="inactive" />
+          </el-select>
         </label>
         <div class="service-filter-actions">
           <el-button type="primary" @click="queryAttendance">

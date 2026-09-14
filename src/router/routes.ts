@@ -19,7 +19,7 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/projects',
     component: () => import('../views/ProjectsView.vue'),
-    meta: { title: '项目管理', subtitle: '配置店内服务项目、时长与价格' }
+    meta: { title: '单次项目管理', subtitle: '配置店内服务项目、时长与价格' }
   },
   {
     path: '/appointments',
