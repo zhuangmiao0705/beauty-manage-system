@@ -25,7 +25,7 @@ import {
   type AmountTrendRecord,
   type TrendAggregation
 } from '../services/reporting'
-import { currency, dateFromDaysAgo, downloadCsv, isToday } from '../utils'
+import { currency, dateFromDaysAgo, downloadCsv } from '../utils'
 import { notify } from '../utils/feedback'
 
 const range = ref<ReportRange>('day')
@@ -91,56 +91,47 @@ const average = computed(() =>
     ? services.value.reduce((sum, item) => sum + item.amount, 0) / services.value.length
     : 0
 )
-const todayRechargeIncome = computed(() =>
-  salonStore.transactions
-    .filter(
-      item => item.type === 'recharge' && item.status !== 'cancelled' && isToday(item.createdAt)
-    )
+const rangeRechargeIncome = computed(() =>
+  transactions.value
+    .filter(item => item.type === 'recharge' && item.status !== 'cancelled')
     .reduce((sum, item) => sum + item.amount, 0)
 )
-const todayServiceIncome = computed(() =>
-  salonStore.services
-    .filter(item => item.status === 'completed' && isToday(item.createdAt))
-    .reduce((sum, item) => sum + (item.externalPaymentAmount ?? 0), 0)
+const rangeServiceIncome = computed(() =>
+  services.value.reduce((sum, item) => sum + (item.externalPaymentAmount ?? 0), 0)
 )
-const todayPackageIncome = computed(() =>
-  salonStore.packagePurchases
-    .filter(item => isToday(item.purchasedAt))
-    .reduce((sum, item) => sum + item.cashPaymentAmount, 0)
+const rangePackageIncome = computed(() =>
+  packagePurchases.value.reduce((sum, item) => sum + item.cashPaymentAmount, 0)
 )
-const todayRefundOutflow = computed(() =>
-  salonStore.refundRecords
-    .filter(item => isToday(item.createdAt))
-    .reduce((sum, item) => sum + item.cashAmount, 0)
+const rangeRefundOutflow = computed(() =>
+  refunds.value.reduce((sum, item) => sum + item.cashAmount, 0)
 )
-const todayLegacyIncome = computed(() =>
-  salonStore.transactions
+const rangeLegacyIncome = computed(() =>
+  transactions.value
     .filter(
       item =>
         item.type === 'consume' &&
         item.status !== 'cancelled' &&
-        isToday(item.createdAt) &&
         (!item.sourceType || item.sourceType === 'legacy') &&
         item.paymentMethod !== '会员余额'
     )
     .reduce((sum, item) => sum + item.amount, 0)
 )
-const todayRevenue = computed(
+const actualIncome = computed(
   () =>
-    todayRechargeIncome.value +
-    todayServiceIncome.value +
-    todayPackageIncome.value +
-    todayLegacyIncome.value -
-    todayRefundOutflow.value
+    rangeRechargeIncome.value +
+    rangeServiceIncome.value +
+    rangePackageIncome.value +
+    rangeLegacyIncome.value -
+    rangeRefundOutflow.value
 )
-const todayRevenueHint = computed(() => {
+const actualIncomeHint = computed(() => {
   const parts = [
-    `充值 ${currency(todayRechargeIncome.value)}`,
-    `服务实付 ${currency(todayServiceIncome.value)}`,
-    `套餐现金 ${currency(todayPackageIncome.value)}`
+    `充值 ${currency(rangeRechargeIncome.value)}`,
+    `服务实付 ${currency(rangeServiceIncome.value)}`,
+    `套餐现金 ${currency(rangePackageIncome.value)}`
   ]
-  if (todayLegacyIncome.value) parts.push(`其他入账 ${currency(todayLegacyIncome.value)}`)
-  if (todayRefundOutflow.value) parts.push(`退款支出 ${currency(todayRefundOutflow.value)}`)
+  if (rangeLegacyIncome.value) parts.push(`其他入账 ${currency(rangeLegacyIncome.value)}`)
+  if (rangeRefundOutflow.value) parts.push(`退款支出 ${currency(rangeRefundOutflow.value)}`)
   return parts.join(' · ')
 })
 
@@ -285,10 +276,10 @@ function exportReport() {
         role="button"
         tabindex="0"
         :aria-pressed="selectedMetric === 'actualIncome'"
-        label="今日营收"
-        :value="currency(todayRevenue)"
-        :hint="todayRevenueHint"
-        trend="今日实际入账"
+        :label="`${rangeLabel}实际入账`"
+        :value="currency(actualIncome)"
+        :hint="actualIncomeHint"
+        trend="外部资金净入账"
         :icon="CircleDollarSign"
         tone="rose"
         @click="selectMetric('actualIncome')"
