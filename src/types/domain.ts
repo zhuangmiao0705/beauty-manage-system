@@ -71,9 +71,48 @@ export interface ProjectDefinition {
   name: string
   duration: number
   price: number
+  productId: string | null
+  consumptionQuantity: number
   status: EntityStatus
   createdAt: string
   updatedAt: string
+}
+
+export interface Product {
+  id: string
+  name: string
+  unitPrice: number
+  stock: number
+  status: EntityStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProductConsumption {
+  id: string
+  serviceId: string
+  productId: string
+  productName: string
+  quantity: number
+  unitCost: number
+  sourceType: 'project' | 'package'
+  sourceId: string
+  memberName: string
+  employee: string
+  consumedAt: string
+  status: 'active' | 'cancelled'
+}
+
+export interface SupplyPurchase {
+  id: string
+  name: string
+  category: string
+  quantity: number
+  unit: string
+  amount: number
+  purchasedAt: string
+  note: string
+  createdAt: string
 }
 
 export interface Employee {
@@ -132,6 +171,8 @@ export interface PackageDefinition {
   limitType: PackageLimitType
   validityDays: number
   packageType: PackageType
+  productId: string | null
+  consumptionQuantity: number
   status: EntityStatus
   createdAt: string
   updatedAt: string
@@ -247,6 +288,9 @@ export interface AppSnapshot {
   transactions: TransactionRecord[]
   services: ServiceRecord[]
   projects: ProjectDefinition[]
+  products: Product[]
+  productConsumptions: ProductConsumption[]
+  supplyPurchases: SupplyPurchase[]
   employees: Employee[]
   employeeCompensations: EmployeeCompensation[]
   employeeStatusEvents: EmployeeStatusEvent[]
@@ -291,6 +335,20 @@ export interface ProjectDefinitionInput {
   name: string
   duration: number
   price: number
+  productId: string | null
+  consumptionQuantity: number
+}
+
+export interface ProductInput {
+  name: string
+  unitPrice: number
+  stock: number
+}
+
+export interface SupplyPurchaseInput {
+  name: string
+  amount: number
+  purchasedAt: string
 }
 
 export interface EmployeeInput {
@@ -322,6 +380,8 @@ export interface PackageDefinitionInput {
   limitType: PackageLimitType
   validityDays: number
   packageType: PackageType
+  productId: string | null
+  consumptionQuantity: number
 }
 
 export interface PackageRefundInput {
@@ -332,6 +392,8 @@ export interface PackageRefundInput {
 
 export interface AccountRefundInput {
   memberId: string
+  amount: number
+  employee: string
   note: string
 }
 

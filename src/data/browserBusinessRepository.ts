@@ -15,11 +15,79 @@ import type {
   PackageDefinitionInput,
   PackagePurchaseInput,
   PackageRefundInput,
-  ProjectDefinitionInput
+  ProductInput,
+  ProjectDefinitionInput,
+  SupplyPurchaseInput
 } from '../types'
 import { isPackagePurchaseAvailable, localMonthKey } from '../utils'
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100
+
+function recordBrowserProductConsumption(
+  snapshot: AppSnapshot,
+  service: AppSnapshot['services'][number]
+) {
+  if (
+    service.status !== 'completed' ||
+    snapshot.productConsumptions.some(item => item.serviceId === service.id)
+  )
+    return
+  let sourceType: 'project' | 'package'
+  let sourceId: string
+  let productId: string | null | undefined
+  let quantity = 0
+  if (service.projectId) {
+    const project = snapshot.projects.find(item => item.id === service.projectId)
+    if (!project) return
+    sourceType = 'project'
+    sourceId = project.id
+    productId = project.productId
+    quantity = project.consumptionQuantity
+  } else if (service.packagePurchaseId) {
+    const purchase = snapshot.packagePurchases.find(item => item.id === service.packagePurchaseId)
+    const packageItem = snapshot.packages.find(item => item.id === purchase?.packageId)
+    if (!packageItem) return
+    sourceType = 'package'
+    sourceId = packageItem.id
+    productId = packageItem.productId
+    quantity = packageItem.consumptionQuantity
+  } else return
+  if (!productId || quantity <= 0) return
+  const product = snapshot.products.find(item => item.id === productId)
+  if (!product) return
+  product.stock = roundMoney(product.stock - quantity)
+  product.updatedAt = new Date().toISOString()
+  snapshot.productConsumptions.unshift({
+    id: crypto.randomUUID(),
+    serviceId: service.id,
+    productId: product.id,
+    productName: product.name,
+    quantity,
+    unitCost: product.unitPrice,
+    sourceType,
+    sourceId,
+    memberName: service.memberName,
+    employee: service.employee,
+    consumedAt: service.createdAt,
+    status: 'active'
+  })
+}
+
+function backfillBrowserProductConsumptions(
+  snapshot: AppSnapshot,
+  sourceType: 'project' | 'package',
+  sourceId: string
+) {
+  snapshot.services.forEach(service => {
+    const matches =
+      sourceType === 'project'
+        ? service.projectId === sourceId
+        : snapshot.packagePurchases.some(
+            purchase => purchase.id === service.packagePurchaseId && purchase.packageId === sourceId
+          )
+    if (matches) recordBrowserProductConsumption(snapshot, service)
+  })
+}
 
 const DEFAULT_EMPLOYEES = [
   ['e1', '林晓雅'],
@@ -187,6 +255,9 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   snapshot.packageConsumptions ??= []
   snapshot.refundRecords ??= []
   snapshot.projects ??= []
+  snapshot.products ??= []
+  snapshot.productConsumptions ??= []
+  snapshot.supplyPurchases ??= []
   snapshot.appointments ??= []
 
   cleanupDefaultEmployees(snapshot)
@@ -239,6 +310,17 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
     item.packageType ??= '套盒'
     item.limitType ??= 'count'
     item.validityDays ??= 0
+    item.productId ??= null
+    item.consumptionQuantity ??= 0
+  })
+
+  snapshot.projects.forEach(item => {
+    item.productId ??= null
+    item.consumptionQuantity ??= 0
+  })
+  snapshot.productConsumptions.forEach(item => {
+    item.unitCost ??=
+      snapshot.products.find(product => product.id === item.productId)?.unitPrice ?? 0
   })
 
   snapshot.members.forEach(member => {
@@ -321,6 +403,7 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
       service.commissionRuleVersion = COMMISSION_RULE_VERSION
     }
   })
+  snapshot.services.forEach(service => recordBrowserProductConsumption(snapshot, service))
   snapshot.packagePurchases.forEach(purchase => {
     if ((purchase.commissionRuleVersion ?? 0) < PACKAGE_COMMISSION_RULE_VERSION) {
       const employee = snapshot.employees.find(item => item.name === purchase.employee)
@@ -338,7 +421,8 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
 
 export function createBrowserProject(snapshot: AppSnapshot, input: ProjectDefinitionInput) {
   const name = input.name.trim()
-  if (!name || input.duration <= 0 || input.price <= 0) throw new Error('项目信息无效')
+  if (!name || input.duration <= 0 || input.price < 0 || input.consumptionQuantity < 0)
+    throw new Error('项目信息无效')
   if (snapshot.projects.some(item => item.name === name)) throw new Error('项目名称已存在')
   const now = new Date().toISOString()
   snapshot.projects.unshift({
@@ -346,6 +430,8 @@ export function createBrowserProject(snapshot: AppSnapshot, input: ProjectDefini
     name,
     duration: input.duration,
     price: roundMoney(input.price),
+    productId: input.productId || null,
+    consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
     status: 'active',
     createdAt: now,
     updatedAt: now
@@ -360,15 +446,84 @@ export function updateBrowserProject(
   const project = snapshot.projects.find(item => item.id === projectId)
   if (!project) throw new Error('项目不存在')
   const name = input.name.trim()
-  if (!name || input.duration <= 0 || input.price <= 0) throw new Error('项目信息无效')
+  if (!name || input.duration <= 0 || input.price < 0 || input.consumptionQuantity < 0)
+    throw new Error('项目信息无效')
   if (snapshot.projects.some(item => item.id !== projectId && item.name === name))
     throw new Error('项目名称已存在')
   Object.assign(project, {
     name,
     duration: input.duration,
     price: roundMoney(input.price),
+    productId: input.productId || null,
+    consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
     updatedAt: new Date().toISOString()
   })
+  backfillBrowserProductConsumptions(snapshot, 'project', projectId)
+}
+
+export function createBrowserProduct(snapshot: AppSnapshot, input: ProductInput) {
+  const name = input.name.trim()
+  if (!name || input.unitPrice < 0 || input.stock < 0) throw new Error('产品信息无效')
+  if (snapshot.products.some(item => item.name === name)) throw new Error('产品名称已存在')
+  const now = new Date().toISOString()
+  snapshot.products.unshift({
+    id: crypto.randomUUID(),
+    name,
+    unitPrice: roundMoney(input.unitPrice),
+    stock: input.stock,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now
+  })
+}
+
+export function updateBrowserProduct(
+  snapshot: AppSnapshot,
+  productId: string,
+  input: ProductInput
+) {
+  const product = snapshot.products.find(item => item.id === productId)
+  if (!product) throw new Error('产品不存在')
+  const name = input.name.trim()
+  if (!name || input.unitPrice < 0 || input.stock < 0) throw new Error('产品信息无效')
+  if (snapshot.products.some(item => item.id !== productId && item.name === name))
+    throw new Error('产品名称已存在')
+  Object.assign(product, {
+    name,
+    unitPrice: roundMoney(input.unitPrice),
+    stock: input.stock,
+    updatedAt: new Date().toISOString()
+  })
+}
+
+export function addBrowserProductStock(snapshot: AppSnapshot, productId: string, quantity: number) {
+  const product = snapshot.products.find(item => item.id === productId)
+  if (!product) throw new Error('产品不存在')
+  if (!Number.isFinite(quantity) || quantity <= 0) throw new Error('入库数量必须大于0')
+  product.stock = roundMoney(product.stock + quantity)
+  product.updatedAt = new Date().toISOString()
+}
+
+export function createBrowserSupplyPurchase(snapshot: AppSnapshot, input: SupplyPurchaseInput) {
+  if (!input.name.trim() || !input.purchasedAt || input.amount < 0)
+    throw new Error('采购记录信息无效')
+  snapshot.supplyPurchases.unshift({
+    id: crypto.randomUUID(),
+    ...input,
+    name: input.name.trim(),
+    category: '其他',
+    quantity: 1,
+    unit: '次',
+    amount: roundMoney(input.amount),
+    note: '',
+    createdAt: new Date().toISOString()
+  })
+}
+
+export function deleteBrowserSupplyPurchase(snapshot: AppSnapshot, purchaseId: string) {
+  const index = snapshot.supplyPurchases.findIndex(item => item.id === purchaseId)
+  if (index < 0) throw new Error('采购记录不存在')
+  snapshot.supplyPurchases.splice(index, 1)
 }
 
 export function setBrowserProjectStatus(
@@ -421,7 +576,8 @@ export function createBrowserPackage(snapshot: AppSnapshot, input: PackageDefini
     !['count', 'time'].includes(input.limitType) ||
     (input.limitType === 'count' && (!Number.isInteger(input.totalUses) || input.totalUses <= 0)) ||
     (input.limitType === 'time' &&
-      (!Number.isInteger(input.validityDays) || input.validityDays <= 0))
+      (!Number.isInteger(input.validityDays) || input.validityDays <= 0)) ||
+    input.consumptionQuantity < 0
   )
     throw new Error('套餐名称、价格或可用次数无效')
   if (snapshot.packages.some(item => item.name === name)) throw new Error('套餐名称已存在')
@@ -434,6 +590,8 @@ export function createBrowserPackage(snapshot: AppSnapshot, input: PackageDefini
     limitType: input.limitType,
     validityDays: input.limitType === 'time' ? input.validityDays : 0,
     packageType: input.packageType,
+    productId: input.productId || null,
+    consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
     status: 'active',
     createdAt: now,
     updatedAt: now
@@ -455,7 +613,8 @@ export function updateBrowserPackage(
     !['count', 'time'].includes(input.limitType) ||
     (input.limitType === 'count' && (!Number.isInteger(input.totalUses) || input.totalUses <= 0)) ||
     (input.limitType === 'time' &&
-      (!Number.isInteger(input.validityDays) || input.validityDays <= 0))
+      (!Number.isInteger(input.validityDays) || input.validityDays <= 0)) ||
+    input.consumptionQuantity < 0
   )
     throw new Error('套餐名称、价格或可用次数无效')
   if (snapshot.packages.some(item => item.id !== packageId && item.name === name))
@@ -466,8 +625,11 @@ export function updateBrowserPackage(
     price: roundMoney(input.price),
     totalUses: input.limitType === 'count' ? input.totalUses : 1,
     validityDays: input.limitType === 'time' ? input.validityDays : 0,
+    productId: input.productId || null,
+    consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
     updatedAt: new Date().toISOString()
   })
+  backfillBrowserProductConsumptions(snapshot, 'package', packageId)
 }
 
 export function setBrowserPackageStatus(
@@ -708,6 +870,7 @@ export function consumeBrowserPackage(snapshot: AppSnapshot, input: PackageConsu
     status: 'active',
     cancelledAt: null
   })
+  recordBrowserProductConsumption(snapshot, snapshot.services[0])
   const member = snapshot.members.find(item => item.id === purchase.memberId)
   if (member) member.lastVisit = now
 }

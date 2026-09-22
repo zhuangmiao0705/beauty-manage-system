@@ -2,7 +2,8 @@ use crate::{
     commands::auth::require_session,
     commands::salon::insert_normal_service,
     database::{
-        employee_compensation_for_name, round_money, snapshot_for_user, validate_active_employee,
+        employee_compensation_for_name, record_product_consumption_for_service, round_money,
+        snapshot_for_user, validate_active_employee,
     },
     models::{AppSnapshot, AppointmentCompletionInput, AppointmentInput},
     state::DatabaseState,
@@ -547,6 +548,7 @@ fn complete_package_service(
             ],
         )
         .map_err(|error| error.to_string())?;
+    record_product_consumption_for_service(transaction, service_id)?;
     transaction
         .execute(
             "UPDATE members SET last_visit=?1 WHERE id=?2",

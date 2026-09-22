@@ -39,6 +39,9 @@ pub(crate) struct AppSnapshot {
     pub(crate) transactions: Vec<TransactionRecord>,
     pub(crate) services: Vec<ServiceRecord>,
     pub(crate) projects: Vec<ProjectDefinition>,
+    pub(crate) products: Vec<Product>,
+    pub(crate) product_consumptions: Vec<ProductConsumption>,
+    pub(crate) supply_purchases: Vec<SupplyPurchase>,
     pub(crate) employees: Vec<Employee>,
     pub(crate) employee_compensations: Vec<EmployeeCompensation>,
     pub(crate) employee_status_events: Vec<EmployeeStatusEvent>,
@@ -122,9 +125,54 @@ pub(crate) struct ProjectDefinition {
     pub(crate) name: String,
     pub(crate) duration: i64,
     pub(crate) price: f64,
+    pub(crate) product_id: Option<String>,
+    pub(crate) consumption_quantity: f64,
     pub(crate) status: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Product {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) unit_price: f64,
+    pub(crate) stock: f64,
+    pub(crate) status: String,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProductConsumption {
+    pub(crate) id: String,
+    pub(crate) service_id: String,
+    pub(crate) product_id: String,
+    pub(crate) product_name: String,
+    pub(crate) quantity: f64,
+    pub(crate) unit_cost: f64,
+    pub(crate) source_type: String,
+    pub(crate) source_id: String,
+    pub(crate) member_name: String,
+    pub(crate) employee: String,
+    pub(crate) consumed_at: String,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupplyPurchase {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) category: String,
+    pub(crate) quantity: f64,
+    pub(crate) unit: String,
+    pub(crate) amount: f64,
+    pub(crate) purchased_at: String,
+    pub(crate) note: String,
+    pub(crate) created_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +243,8 @@ pub(crate) struct PackageDefinition {
     pub(crate) limit_type: String,
     pub(crate) validity_days: i64,
     pub(crate) package_type: String,
+    pub(crate) product_id: Option<String>,
+    pub(crate) consumption_quantity: f64,
     pub(crate) status: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
@@ -355,6 +405,25 @@ pub(crate) struct ProjectDefinitionInput {
     pub(crate) name: String,
     pub(crate) duration: i64,
     pub(crate) price: f64,
+    pub(crate) product_id: Option<String>,
+    #[serde(default)]
+    pub(crate) consumption_quantity: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProductInput {
+    pub(crate) name: String,
+    pub(crate) unit_price: f64,
+    pub(crate) stock: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SupplyPurchaseInput {
+    pub(crate) name: String,
+    pub(crate) amount: f64,
+    pub(crate) purchased_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -411,6 +480,9 @@ pub(crate) struct PackageDefinitionInput {
     pub(crate) limit_type: String,
     pub(crate) validity_days: i64,
     pub(crate) package_type: String,
+    pub(crate) product_id: Option<String>,
+    #[serde(default)]
+    pub(crate) consumption_quantity: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,6 +498,8 @@ pub(crate) struct PackageRefundInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountRefundInput {
     pub(crate) member_id: String,
+    pub(crate) amount: f64,
+    pub(crate) employee: String,
     #[serde(default)]
     pub(crate) note: String,
 }

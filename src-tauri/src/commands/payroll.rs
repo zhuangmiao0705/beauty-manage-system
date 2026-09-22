@@ -47,6 +47,10 @@ fn salary_components(
     )
 }
 
+fn net_recharge_performance(recharge_amount: f64, account_refund_amount: f64) -> f64 {
+    round_money(recharge_amount - account_refund_amount)
+}
+
 fn parse_month(month: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d")
         .map_err(|_| "月份格式应为 YYYY-MM".to_string())
@@ -265,6 +269,16 @@ pub(crate) fn get_employee_salaries(
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())?;
+        let account_refund_amount: f64 = connection
+            .query_row(
+                "SELECT COALESCE(SUM(cash_amount),0) FROM refund_records
+                 WHERE refund_type='account' AND employee=?1
+                   AND created_at>=?2 AND created_at<?3",
+                params![name, start_text, end_text],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let recharge_amount = net_recharge_performance(recharge_amount, account_refund_amount);
         let package_purchase_amount: f64 = connection
             .query_row(
                 "SELECT COALESCE(SUM(cash_payment_amount),0) FROM package_purchases
@@ -351,7 +365,7 @@ pub(crate) fn get_employee_salaries(
 
 #[cfg(test)]
 mod tests {
-    use super::salary_components;
+    use super::{net_recharge_performance, salary_components};
     use crate::models::EmployeeCompensation;
 
     fn compensation() -> EmployeeCompensation {
@@ -379,5 +393,11 @@ mod tests {
             salary_components(&compensation(), 13000.0, 2, 1, 27, 13, 27),
             (1800.0, 1380.0, 130.0, 0.0, 3310.0)
         );
+    }
+
+    #[test]
+    fn account_refund_reduces_recharge_performance_in_refund_month() {
+        assert_eq!(net_recharge_performance(1_000.0, 300.0), 700.0);
+        assert_eq!(net_recharge_performance(0.0, 300.0), -300.0);
     }
 }

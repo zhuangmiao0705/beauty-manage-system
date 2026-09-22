@@ -514,7 +514,16 @@ loadAttendanceDrafts()
         </el-table-column>
         <el-table-column label="绩效来源" min-width="125">
           <template #default="{ row }">
-            <el-tag round :type="row.source === '会员充值' ? 'success' : 'warning'">
+            <el-tag
+              round
+              :type="
+                row.source === '会员充值'
+                  ? 'success'
+                  : row.source.includes('退款')
+                    ? 'danger'
+                    : 'warning'
+              "
+            >
               {{ row.source }}
             </el-tag>
           </template>

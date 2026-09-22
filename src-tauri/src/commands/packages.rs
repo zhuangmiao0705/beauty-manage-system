@@ -1,7 +1,9 @@
 use crate::{
     commands::auth::{require_manager, require_session},
     database::{
-        employee_compensation_for_name, round_money, snapshot_for_user, validate_active_employee,
+        backfill_product_consumptions_for_source, employee_compensation_for_name,
+        record_product_consumption_for_service, round_money, snapshot_for_user,
+        validate_active_employee,
     },
     models::{
         AppSnapshot, EmployeeCompensation, PackageConsumptionInput, PackageDefinitionInput,
@@ -21,6 +23,8 @@ fn validate_package(input: &PackageDefinitionInput) -> Result<(), String> {
         || (input.limit_type == "count" && input.total_uses <= 0)
         || (input.limit_type == "time" && input.validity_days <= 0)
         || (input.package_type != "套盒" && input.package_type != "普通")
+        || !input.consumption_quantity.is_finite()
+        || input.consumption_quantity < 0.0
     {
         return Err("套餐名称、价格、限制方式或类型无效".to_string());
     }
@@ -123,6 +127,25 @@ pub(crate) fn create_package(
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
     let now = Utc::now().to_rfc3339();
+    let product_id = input
+        .product_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(product_id) = product_id {
+        connection
+            .query_row(
+                "SELECT 1 FROM products WHERE id=?1 AND status='active'",
+                params![product_id],
+                |_| Ok(()),
+            )
+            .map_err(|_| "请选择有效的消耗产品".to_string())?;
+    }
+    let consumption_quantity = if product_id.is_some() {
+        input.consumption_quantity
+    } else {
+        0.0
+    };
     let total_uses = if input.limit_type == "count" {
         input.total_uses
     } else {
@@ -136,8 +159,9 @@ pub(crate) fn create_package(
     connection
         .execute(
             "INSERT INTO packages
-             (id,name,price,total_uses,limit_type,validity_days,package_type,status,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,'active',?8,?8)",
+             (id,name,price,total_uses,limit_type,validity_days,package_type,product_id,
+              consumption_quantity,status,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?10)",
             params![
                 Uuid::new_v4().to_string(),
                 input.name.trim(),
@@ -146,6 +170,8 @@ pub(crate) fn create_package(
                 input.limit_type,
                 validity_days,
                 input.package_type,
+                product_id,
+                consumption_quantity,
                 now
             ],
         )
@@ -168,7 +194,7 @@ pub(crate) fn update_package(
 ) -> Result<AppSnapshot, String> {
     let manager = require_manager(&state, &token)?;
     validate_package(&input)?;
-    let connection = state
+    let mut connection = state
         .connection
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
@@ -182,10 +208,33 @@ pub(crate) fn update_package(
     } else {
         0
     };
-    let changed = connection
+    let product_id = input
+        .product_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(product_id) = product_id {
+        connection
+            .query_row(
+                "SELECT 1 FROM products WHERE id=?1 AND status='active'",
+                params![product_id],
+                |_| Ok(()),
+            )
+            .map_err(|_| "请选择有效的消耗产品".to_string())?;
+    }
+    let consumption_quantity = if product_id.is_some() {
+        input.consumption_quantity
+    } else {
+        0.0
+    };
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let changed = transaction
         .execute(
             "UPDATE packages SET name=?1,price=?2,total_uses=?3,limit_type=?4,
-             validity_days=?5,package_type=?6,updated_at=?7 WHERE id=?8",
+             validity_days=?5,package_type=?6,product_id=?7,consumption_quantity=?8,
+             updated_at=?9 WHERE id=?10",
             params![
                 input.name.trim(),
                 round_money(input.price),
@@ -193,6 +242,8 @@ pub(crate) fn update_package(
                 input.limit_type,
                 validity_days,
                 input.package_type,
+                product_id,
+                consumption_quantity,
                 Utc::now().to_rfc3339(),
                 package_id
             ],
@@ -207,6 +258,8 @@ pub(crate) fn update_package(
     if changed == 0 {
         return Err("套餐不存在".to_string());
     }
+    backfill_product_consumptions_for_source(&transaction, "package", &package_id)?;
+    transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &manager)
 }
 
@@ -797,6 +850,7 @@ pub(crate) fn consume_package(
             ],
         )
         .map_err(|error| error.to_string())?;
+    record_product_consumption_for_service(&transaction, &service_id)?;
     transaction
         .execute(
             "UPDATE members SET last_visit=?1 WHERE id=?2",

@@ -52,6 +52,25 @@ export const routes: RouteRecordRaw[] = [
     meta: { title: '薪酬管理', subtitle: '员工工资、考勤与提成配置', managerOnly: true }
   },
   {
+    path: '/products',
+    component: () => import('../views/ProductsView.vue'),
+    meta: { title: '产品管理', subtitle: '管理护理产品、成本与当前库存', managerOnly: true }
+  },
+  {
+    path: '/product-consumption',
+    component: () => import('../views/ProductConsumptionView.vue'),
+    meta: { title: '产品消耗', subtitle: '查询护理产品消耗及对应服务明细', managerOnly: true }
+  },
+  {
+    path: '/material-purchase',
+    component: () => import('../views/MaterialPurchaseView.vue'),
+    meta: { title: '物料采购', subtitle: '登记门店物料采购记录与成本', managerOnly: true }
+  },
+  {
+    path: '/material-statistics',
+    redirect: '/material-purchase'
+  },
+  {
     path: '/settings',
     component: () => import('../views/SettingsView.vue'),
     meta: { title: '系统设置', subtitle: '数据安全、备份与系统信息', managerOnly: true }

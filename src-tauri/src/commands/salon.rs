@@ -1,8 +1,9 @@
 use crate::{
     commands::auth::{require_manager, require_session, revoke_account_sessions},
     database::{
-        employee_compensation_for_name, refundable_principal_for_member, round_money, snapshot,
-        snapshot_for_user, validate_active_employee,
+        employee_compensation_for_name, record_product_consumption_for_service,
+        refundable_principal_for_member, round_money, snapshot, snapshot_for_user,
+        validate_active_employee,
     },
     models::{
         AccountRefundInput, AppSnapshot, EmployeeInput, MemberInput, ServiceInput, TransactionInput,
@@ -113,7 +114,7 @@ pub(crate) fn insert_normal_service(
     } else {
         external_payment_method.to_string()
     };
-    let transaction_id = Uuid::new_v4().to_string();
+    let transaction_id = (price > 0.0).then(|| Uuid::new_v4().to_string());
     transaction
         .execute(
             "INSERT INTO services
@@ -149,27 +150,30 @@ pub(crate) fn insert_normal_service(
                 error.to_string()
             }
         })?;
-    transaction
-        .execute(
-            "INSERT INTO transactions
-             (id,member_id,member_name,type,amount,gift_amount,balance_after,payment_method,item,
-              employee,commission,commission_rule_version,created_at,note,status,source_type,source_id)
-             VALUES (?1,?2,?3,'consume',?4,0,?5,?6,?7,?8,0,2,?9,'普通消费自动结算',
-                     'active','service',?10)",
-            params![
-                transaction_id,
-                resolved_member_id,
-                customer_name,
-                round_money(price),
-                balance_after,
-                payment_method,
-                project_name,
-                employee,
-                now,
-                service_id
-            ],
-        )
-        .map_err(|error| error.to_string())?;
+    record_product_consumption_for_service(transaction, service_id)?;
+    if let Some(transaction_id) = transaction_id {
+        transaction
+            .execute(
+                "INSERT INTO transactions
+                 (id,member_id,member_name,type,amount,gift_amount,balance_after,payment_method,item,
+                  employee,commission,commission_rule_version,created_at,note,status,source_type,source_id)
+                 VALUES (?1,?2,?3,'consume',?4,0,?5,?6,?7,?8,0,2,?9,'普通消费自动结算',
+                         'active','service',?10)",
+                params![
+                    transaction_id,
+                    resolved_member_id,
+                    customer_name,
+                    round_money(price),
+                    balance_after,
+                    payment_method,
+                    project_name,
+                    employee,
+                    now,
+                    service_id
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok(service_id.to_string())
 }
 
@@ -332,6 +336,51 @@ pub(crate) fn create_transaction(
     snapshot_for_user(&connection, &operator)
 }
 
+#[derive(Debug, PartialEq)]
+struct AccountRefundBreakdown {
+    refund_amount: f64,
+    principal_after: f64,
+    gift_after: f64,
+    gift_forfeited_amount: f64,
+    balance_after: f64,
+}
+
+fn resolve_account_refund(
+    principal_balance: f64,
+    gift_balance: f64,
+    available_refund: f64,
+    requested_amount: f64,
+) -> Result<AccountRefundBreakdown, String> {
+    if !requested_amount.is_finite() || requested_amount <= 0.0 {
+        return Err("退款金额必须大于0".to_string());
+    }
+    let refund_amount = round_money(requested_amount);
+    if refund_amount > available_refund + 0.001 {
+        return Err(format!(
+            "退款金额不能超过当前可退本金{available_refund:.2}元"
+        ));
+    }
+    let is_full_refund = refund_amount >= available_refund - 0.001;
+    let principal_after = if is_full_refund {
+        0.0
+    } else {
+        round_money((principal_balance - refund_amount).max(0.0))
+    };
+    let gift_after = if is_full_refund { 0.0 } else { gift_balance };
+    let gift_forfeited_amount = if is_full_refund {
+        round_money(gift_balance + (principal_balance - refund_amount).max(0.0))
+    } else {
+        0.0
+    };
+    Ok(AccountRefundBreakdown {
+        refund_amount,
+        principal_after,
+        gift_after,
+        gift_forfeited_amount,
+        balance_after: round_money(principal_after + gift_after),
+    })
+}
+
 #[tauri::command]
 pub(crate) fn refund_member_account(
     token: String,
@@ -346,6 +395,13 @@ pub(crate) fn refund_member_account(
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
+    let employee: String = transaction
+        .query_row(
+            "SELECT name FROM employees WHERE name=?1",
+            params![input.employee.trim()],
+            |row| row.get(0),
+        )
+        .map_err(|_| "请选择有效的绩效归属员工".to_string())?;
     let (member_name, principal_balance, gift_balance, total_recharge): (String, f64, f64, f64) =
         transaction
             .query_row(
@@ -358,20 +414,30 @@ pub(crate) fn refund_member_account(
     if principal_balance <= 0.0 && gift_balance <= 0.0 {
         return Err("该会员账户没有可退款或可清除的余额".to_string());
     }
-    let refund_amount = refundable_principal_for_member(
+    let available_refund = refundable_principal_for_member(
         &transaction,
         &input.member_id,
         total_recharge,
         principal_balance,
     )?;
-    let gift_deduction_amount =
-        round_money(gift_balance + (principal_balance - refund_amount).max(0.0));
+    let refund = resolve_account_refund(
+        principal_balance,
+        gift_balance,
+        available_refund,
+        input.amount,
+    )?;
     let now = Utc::now().to_rfc3339();
     transaction
         .execute(
-            "UPDATE members SET balance=0,principal_balance=0,gift_balance=0,last_visit=?1
-             WHERE id=?2",
-            params![now, input.member_id],
+            "UPDATE members SET balance=?1,principal_balance=?2,gift_balance=?3,last_visit=?4
+             WHERE id=?5",
+            params![
+                refund.balance_after,
+                refund.principal_after,
+                refund.gift_after,
+                now,
+                input.member_id
+            ],
         )
         .map_err(|error| error.to_string())?;
     transaction
@@ -380,14 +446,16 @@ pub(crate) fn refund_member_account(
              (id,refund_type,member_id,member_name,package_purchase_id,amount,balance_amount,
               cash_amount,gift_forfeited_amount,commission,employee,operator,balance_after,
               created_at,note)
-             VALUES (?1,'account',?2,?3,NULL,?4,0,?4,?5,0,'',?6,0,?7,?8)",
+             VALUES (?1,'account',?2,?3,NULL,?4,0,?4,?5,0,?6,?7,?8,?9,?10)",
             params![
                 Uuid::new_v4().to_string(),
                 input.member_id,
                 member_name,
-                refund_amount,
-                gift_deduction_amount,
+                refund.refund_amount,
+                refund.gift_forfeited_amount,
+                employee,
                 manager.display_name,
+                refund.balance_after,
                 now,
                 if input.note.trim().is_empty() {
                     "会员账户本金退款".to_string()
@@ -570,7 +638,7 @@ pub(crate) fn cancel_service(
             .map_err(|error| error.to_string())?;
     } else {
         let transaction_id = transaction_id.filter(|value| !value.is_empty());
-        if service_type != "普通手工" || transaction_id.is_none() {
+        if service_type != "普通手工" {
             return Err("该服务不支持撤销".to_string());
         }
         if let Some(member_id) = member_id {
@@ -598,14 +666,30 @@ pub(crate) fn cancel_service(
                 )
                 .map_err(|error| error.to_string())?;
         }
-        transaction
-            .execute(
-                "UPDATE transactions SET status='cancelled',note=note||'；服务已撤销'
-                 WHERE id=?1 AND status='active'",
-                params![transaction_id],
-            )
-            .map_err(|error| error.to_string())?;
+        if let Some(transaction_id) = transaction_id {
+            transaction
+                .execute(
+                    "UPDATE transactions SET status='cancelled',note=note||'；服务已撤销'
+                     WHERE id=?1 AND status='active'",
+                    params![transaction_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
     }
+    transaction
+        .execute(
+            "UPDATE products SET updated_at=?1 WHERE id IN
+             (SELECT product_id FROM product_consumptions WHERE service_id=?2 AND status='active')",
+            params![now, service_id],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "UPDATE product_consumptions SET status='cancelled'
+             WHERE service_id=?1 AND status='active'",
+            params![service_id],
+        )
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             "UPDATE services SET status='cancelled',cancelled_at=?1 WHERE id=?2",
@@ -769,7 +853,10 @@ pub(crate) fn set_employee_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_service_payment, ServicePaymentBreakdown};
+    use super::{
+        resolve_account_refund, resolve_service_payment, AccountRefundBreakdown,
+        ServicePaymentBreakdown,
+    };
 
     #[test]
     fn service_payment_uses_gift_first_and_combines_when_balance_is_insufficient() {
@@ -791,5 +878,30 @@ mod tests {
                 principal_deduction: 20.0,
             }
         );
+    }
+
+    #[test]
+    fn account_refund_supports_partial_and_full_amounts() {
+        assert_eq!(
+            resolve_account_refund(1_000.0, 100.0, 800.0, 300.0).unwrap(),
+            AccountRefundBreakdown {
+                refund_amount: 300.0,
+                principal_after: 700.0,
+                gift_after: 100.0,
+                gift_forfeited_amount: 0.0,
+                balance_after: 800.0,
+            }
+        );
+        assert_eq!(
+            resolve_account_refund(1_000.0, 100.0, 800.0, 800.0).unwrap(),
+            AccountRefundBreakdown {
+                refund_amount: 800.0,
+                principal_after: 0.0,
+                gift_after: 0.0,
+                gift_forfeited_amount: 300.0,
+                balance_after: 0.0,
+            }
+        );
+        assert!(resolve_account_refund(1_000.0, 100.0, 800.0, 900.0).is_err());
     }
 }

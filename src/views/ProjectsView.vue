@@ -9,7 +9,12 @@ import { addProject, salonStore, setProjectStatus, updateProject } from '../data
 import type { ProjectDefinition, ProjectDefinitionInput } from '../types'
 import { currency, fullDateTime } from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
-import { positiveNumberRule, requiredTextRule, validateForm } from '../utils/validation'
+import {
+  nonNegativeNumberRule,
+  positiveNumberRule,
+  requiredTextRule,
+  validateForm
+} from '../utils/validation'
 
 type ProjectFilters = { name: string; status: '' | 'active' | 'inactive' }
 
@@ -19,12 +24,19 @@ const modalVisible = ref(false)
 const saving = ref(false)
 const editingProject = ref<ProjectDefinition | null>(null)
 const formRef = ref<FormInstance>()
-const form = reactive<ProjectDefinitionInput>({ name: '', duration: 60, price: 0 })
-const rules: FormRules<ProjectDefinitionInput> = {
+const form = reactive<ProjectDefinitionInput>({
+  name: '',
+  duration: 60,
+  price: 0,
+  productId: null,
+  consumptionQuantity: 0
+})
+const rules = computed<FormRules<ProjectDefinitionInput>>(() => ({
   name: [requiredTextRule('请输入项目名称')],
   duration: [positiveNumberRule('请输入大于0的项目时长')],
-  price: [positiveNumberRule('请输入大于0的项目价格')]
-}
+  price: [nonNegativeNumberRule('项目价格不能小于0')],
+  consumptionQuantity: form.productId ? [nonNegativeNumberRule('消耗数量不能小于0')] : []
+}))
 
 const filteredProjects = computed(() =>
   salonStore.projects.filter(item => {
@@ -55,8 +67,14 @@ function openProject(item?: ProjectDefinition) {
   Object.assign(
     form,
     item
-      ? { name: item.name, duration: item.duration, price: item.price }
-      : { name: '', duration: 60, price: 0 }
+      ? {
+          name: item.name,
+          duration: item.duration,
+          price: item.price,
+          productId: item.productId,
+          consumptionQuantity: item.consumptionQuantity
+        }
+      : { name: '', duration: 60, price: 0, productId: null, consumptionQuantity: 0 }
   )
   modalVisible.value = true
 }
@@ -138,6 +156,16 @@ async function toggleProject(item: ProjectDefinition) {
             <strong class="money">{{ currency(row.price) }}</strong>
           </template>
         </el-table-column>
+        <el-table-column label="消耗产品" min-width="140">
+          <template #default="{ row }">
+            {{ salonStore.products.find(item => item.id === row.productId)?.name ?? '无消耗' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="消耗数量" min-width="100">
+          <template #default="{ row }">
+            {{ row.productId ? row.consumptionQuantity : '-' }}
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag round :type="row.status === 'active' ? 'success' : 'info'">
@@ -172,7 +200,7 @@ async function toggleProject(item: ProjectDefinition) {
     <BaseModal
       v-if="modalVisible"
       :title="editingProject ? '编辑项目' : '新增项目'"
-      subtitle="修改配置不会影响已经完成的历史服务"
+      subtitle="补充消耗产品后，会自动回算该项目尚未计入的历史消耗"
       @close="modalVisible = false"
     >
       <el-form ref="formRef" :model="form" :rules="rules" scroll-to-error label-position="top">
@@ -191,6 +219,26 @@ async function toggleProject(item: ProjectDefinition) {
           </el-form-item>
           <el-form-item label="项目价格" prop="price">
             <el-input-number v-model="form.price" :min="0" :controls="false" align="left" />
+            <div class="form-tip">价格填写 0 时，将作为赠送项目使用。</div>
+          </el-form-item>
+          <el-form-item label="消耗产品" prop="productId">
+            <el-select v-model="form.productId" placeholder="请选择消耗产品">
+              <el-option label="无消耗" value="" />
+              <el-option
+                v-for="product in salonStore.products.filter(item => item.status === 'active')"
+                :key="product.id"
+                :label="product.name"
+                :value="product.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="form.productId" label="消耗数量" prop="consumptionQuantity">
+            <el-input-number
+              v-model="form.consumptionQuantity"
+              :min="0"
+              :controls="false"
+              align="left"
+            />
           </el-form-item>
         </div>
       </el-form>

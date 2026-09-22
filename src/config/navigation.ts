@@ -48,6 +48,15 @@ const mainGroups = [
       { to: '/staff', label: '员工与账号', icon: ContactRound, managerOnly: true },
       { to: '/payroll', label: '薪酬管理', icon: BadgeDollarSign, managerOnly: true }
     ]
+  },
+  {
+    label: '物料管理',
+    icon: Boxes,
+    items: [
+      { to: '/products', label: '产品管理', icon: PackageOpen, managerOnly: true },
+      { to: '/product-consumption', label: '产品消耗', icon: BarChart3, managerOnly: true },
+      { to: '/material-purchase', label: '物料采购', icon: ListTree, managerOnly: true }
+    ]
   }
 ]
 

@@ -15,6 +15,8 @@ import type {
   PackageDefinitionInput,
   PackagePurchaseInput,
   PackageRefundInput,
+  ProductInput,
+  SupplyPurchaseInput,
   ProjectDefinitionInput,
   ServiceInput,
   TransactionInput
@@ -38,6 +40,10 @@ import {
   setBrowserEmployeeStatus
 } from './browserRepository'
 import {
+  addBrowserProductStock,
+  createBrowserProduct,
+  createBrowserSupplyPurchase,
+  deleteBrowserSupplyPurchase,
   consumeBrowserPackage,
   createBrowserProject,
   createBrowserPackage,
@@ -49,6 +55,7 @@ import {
   setBrowserProjectStatus,
   setBrowserPackageStatus,
   updateBrowserPackage,
+  updateBrowserProduct,
   updateBrowserProject
 } from './browserBusinessRepository'
 
@@ -57,6 +64,9 @@ const emptySnapshot = (): AppSnapshot => ({
   transactions: [],
   services: [],
   projects: [],
+  products: [],
+  productConsumptions: [],
+  supplyPurchases: [],
   employees: [],
   employeeCompensations: [],
   employeeStatusEvents: [],
@@ -78,6 +88,13 @@ function setState(snapshot: AppSnapshot) {
   state.transactions.splice(0, state.transactions.length, ...snapshot.transactions)
   state.services.splice(0, state.services.length, ...snapshot.services)
   state.projects.splice(0, state.projects.length, ...snapshot.projects)
+  state.products.splice(0, state.products.length, ...(snapshot.products ?? []))
+  state.productConsumptions.splice(
+    0,
+    state.productConsumptions.length,
+    ...(snapshot.productConsumptions ?? [])
+  )
+  state.supplyPurchases.splice(0, state.supplyPurchases.length, ...(snapshot.supplyPurchases ?? []))
   state.employees.splice(0, state.employees.length, ...snapshot.employees)
   state.employeeCompensations.splice(
     0,
@@ -163,6 +180,35 @@ export async function setProjectStatus(projectId: string, status: 'active' | 'in
   if (isTauriRuntime())
     setState(await desktopCall<AppSnapshot>('set_project_status', { projectId, status }))
   else persistBrowserMutation(snapshot => setBrowserProjectStatus(snapshot, projectId, status))
+}
+
+export async function addProduct(input: ProductInput) {
+  if (isTauriRuntime()) setState(await desktopCall<AppSnapshot>('create_product', { input }))
+  else persistBrowserMutation(snapshot => createBrowserProduct(snapshot, input))
+}
+
+export async function updateProduct(productId: string, input: ProductInput) {
+  if (isTauriRuntime())
+    setState(await desktopCall<AppSnapshot>('update_product', { productId, input }))
+  else persistBrowserMutation(snapshot => updateBrowserProduct(snapshot, productId, input))
+}
+
+export async function addProductStock(productId: string, quantity: number) {
+  if (isTauriRuntime())
+    setState(await desktopCall<AppSnapshot>('add_product_stock', { productId, quantity }))
+  else persistBrowserMutation(snapshot => addBrowserProductStock(snapshot, productId, quantity))
+}
+
+export async function addSupplyPurchase(input: SupplyPurchaseInput) {
+  if (isTauriRuntime())
+    setState(await desktopCall<AppSnapshot>('create_supply_purchase', { input }))
+  else persistBrowserMutation(snapshot => createBrowserSupplyPurchase(snapshot, input))
+}
+
+export async function deleteSupplyPurchase(purchaseId: string) {
+  if (isTauriRuntime())
+    setState(await desktopCall<AppSnapshot>('delete_supply_purchase', { purchaseId }))
+  else persistBrowserMutation(snapshot => deleteBrowserSupplyPurchase(snapshot, purchaseId))
 }
 
 export async function addEmployee(input: EmployeeInput) {

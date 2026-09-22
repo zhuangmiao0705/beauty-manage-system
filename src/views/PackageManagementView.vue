@@ -46,7 +46,9 @@ const packageForm = reactive<PackageDefinitionInput>({
   totalUses: 1,
   limitType: 'count',
   validityDays: 30,
-  packageType: '套盒'
+  packageType: '套盒',
+  productId: null,
+  consumptionQuantity: 0
 })
 
 const packageRules = computed<FormRules<PackageDefinitionInput>>(() => ({
@@ -57,7 +59,8 @@ const packageRules = computed<FormRules<PackageDefinitionInput>>(() => ({
   validityDays:
     packageForm.limitType === 'time' ? [positiveNumberRule('请输入大于 0 的有效天数')] : [],
   limitType: [{ required: true, message: '请选择限制方式', trigger: 'change' }],
-  packageType: [{ required: true, message: '请选择套餐类型', trigger: 'change' }]
+  packageType: [{ required: true, message: '请选择套餐类型', trigger: 'change' }],
+  consumptionQuantity: packageForm.productId ? [nonNegativeNumberRule('消耗数量不能小于 0')] : []
 }))
 
 const filteredPackages = computed(() =>
@@ -97,7 +100,9 @@ function openPackage(item?: PackageDefinition) {
           totalUses: item.totalUses,
           limitType: item.limitType,
           validityDays: item.validityDays,
-          packageType: item.packageType
+          packageType: item.packageType,
+          productId: item.productId,
+          consumptionQuantity: item.consumptionQuantity
         }
       : {
           name: '',
@@ -105,7 +110,9 @@ function openPackage(item?: PackageDefinition) {
           totalUses: 1,
           limitType: 'count',
           validityDays: 30,
-          packageType: '套盒'
+          packageType: '套盒',
+          productId: null,
+          consumptionQuantity: 0
         }
   )
   modalVisible.value = true
@@ -232,6 +239,16 @@ async function togglePackage(item: PackageDefinition) {
             {{ packageDefinitionLimitText(row as PackageDefinition) }}
           </template>
         </el-table-column>
+        <el-table-column label="消耗产品" min-width="140">
+          <template #default="{ row }">
+            {{ salonStore.products.find(item => item.id === row.productId)?.name ?? '无消耗' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="消耗数量" min-width="100">
+          <template #default="{ row }">
+            {{ row.productId ? row.consumptionQuantity : '-' }}
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
             <el-tag round :type="row.status === 'active' ? 'success' : 'info'">
@@ -266,7 +283,7 @@ async function togglePackage(item: PackageDefinition) {
     <BaseModal
       v-if="modalVisible"
       :title="editingPackage ? '编辑套餐' : '新增套餐'"
-      subtitle="修改配置不会影响已经售出的套餐"
+      subtitle="补充消耗产品后，会自动回算该套餐尚未计入的历史消耗"
       @close="modalVisible = false"
     >
       <el-form
@@ -317,6 +334,25 @@ async function togglePackage(item: PackageDefinition) {
               align="left"
             />
             <div class="form-tip">从会员购买当天开始计算，有效期内不限使用次数。</div>
+          </el-form-item>
+          <el-form-item label="消耗产品" prop="productId">
+            <el-select v-model="packageForm.productId" placeholder="请选择消耗产品">
+              <el-option label="无消耗" value="" />
+              <el-option
+                v-for="product in salonStore.products.filter(item => item.status === 'active')"
+                :key="product.id"
+                :label="product.name"
+                :value="product.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="packageForm.productId" label="消耗数量" prop="consumptionQuantity">
+            <el-input-number
+              v-model="packageForm.consumptionQuantity"
+              :min="0"
+              :controls="false"
+              align="left"
+            />
           </el-form-item>
         </div>
       </el-form>

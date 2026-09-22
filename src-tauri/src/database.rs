@@ -142,6 +142,127 @@ pub(crate) fn round_money(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
 }
 
+pub(crate) fn record_product_consumption_for_service(
+    connection: &Connection,
+    service_id: &str,
+) -> Result<(), String> {
+    let (member_name, employee, consumed_at, project_id, package_purchase_id): (
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = connection
+        .query_row(
+            "SELECT member_name,employee,created_at,project_id,package_purchase_id
+             FROM services WHERE id=?1 AND status='completed'",
+            params![service_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let mapping: Option<(String, f64, String, String)> = if let Some(project_id) = project_id {
+        connection
+            .query_row(
+                "SELECT product_id,consumption_quantity,'project',id FROM projects WHERE id=?1",
+                params![project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .ok()
+    } else if let Some(purchase_id) = package_purchase_id {
+        connection
+            .query_row(
+                "SELECT p.product_id,p.consumption_quantity,'package',p.id
+                 FROM package_purchases pp JOIN packages p ON p.id=pp.package_id
+                 WHERE pp.id=?1",
+                params![purchase_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .ok()
+    } else {
+        None
+    };
+    let Some((product_id, quantity, source_type, source_id)) = mapping else {
+        return Ok(());
+    };
+    if product_id.is_empty() || quantity <= 0.0 {
+        return Ok(());
+    }
+    let (product_name, unit_cost): (String, f64) = connection
+        .query_row(
+            "SELECT name,unit_price FROM products WHERE id=?1",
+            params![product_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|_| "配置的消耗产品不存在".to_string())?;
+    let recorded_at = Utc::now().to_rfc3339();
+    let changed = connection
+        .execute(
+            "INSERT OR IGNORE INTO product_consumptions
+             (id,service_id,product_id,product_name,quantity,unit_cost,source_type,source_id,
+              member_name,employee,consumed_at,status,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'active',?12)",
+            params![
+                Uuid::new_v4().to_string(),
+                service_id,
+                product_id,
+                product_name,
+                quantity,
+                unit_cost,
+                source_type,
+                source_id,
+                member_name,
+                employee,
+                consumed_at,
+                recorded_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed > 0 {
+        connection
+            .execute(
+                "UPDATE products SET updated_at=?1 WHERE id=?2",
+                params![recorded_at, product_id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn backfill_product_consumptions_for_source(
+    connection: &Connection,
+    source_type: &str,
+    source_id: &str,
+) -> Result<(), String> {
+    let service_ids = {
+        let sql = if source_type == "project" {
+            "SELECT id FROM services WHERE project_id=?1 AND status='completed'"
+        } else {
+            "SELECT s.id FROM services s
+             JOIN package_purchases pp ON pp.id=s.package_purchase_id
+             WHERE pp.package_id=?1 AND s.status='completed'"
+        };
+        let mut statement = connection.prepare(sql).map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![source_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    for service_id in service_ids {
+        record_product_consumption_for_service(connection, &service_id)?;
+    }
+    Ok(())
+}
+
 fn cleanup_default_employees(connection: &Connection, now: &str) -> Result<(), String> {
     let defaults = [
         ("e1", "林晓雅"),
@@ -1490,6 +1611,164 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
     }
 
     connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS products (
+               id TEXT PRIMARY KEY,
+               name TEXT NOT NULL UNIQUE,
+               unit_price REAL NOT NULL DEFAULT 0 CHECK(unit_price>=0),
+               initial_stock REAL NOT NULL DEFAULT 0 CHECK(initial_stock>=0),
+               status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS product_stock_entries (
+               id TEXT PRIMARY KEY,
+               product_id TEXT NOT NULL REFERENCES products(id),
+               quantity REAL NOT NULL CHECK(quantity>0),
+               created_at TEXT NOT NULL,
+               note TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS product_stock_adjustments (
+               id TEXT PRIMARY KEY,
+               product_id TEXT NOT NULL REFERENCES products(id),
+               quantity REAL NOT NULL CHECK(quantity<>0),
+               created_at TEXT NOT NULL,
+               note TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE IF NOT EXISTS product_consumptions (
+               id TEXT PRIMARY KEY,
+               service_id TEXT NOT NULL UNIQUE REFERENCES services(id),
+               product_id TEXT NOT NULL REFERENCES products(id),
+               product_name TEXT NOT NULL,
+               quantity REAL NOT NULL CHECK(quantity>=0),
+               unit_cost REAL NOT NULL DEFAULT 0 CHECK(unit_cost>=0),
+               source_type TEXT NOT NULL CHECK(source_type IN ('project','package')),
+               source_id TEXT NOT NULL,
+               member_name TEXT NOT NULL,
+               employee TEXT NOT NULL,
+               consumed_at TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','cancelled')),
+               created_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_product_stock_entries_product
+               ON product_stock_entries(product_id,created_at);
+             CREATE INDEX IF NOT EXISTS idx_product_stock_adjustments_product
+               ON product_stock_adjustments(product_id,created_at);
+             CREATE INDEX IF NOT EXISTS idx_product_consumptions_product
+               ON product_consumptions(product_id,consumed_at);",
+        )
+        .map_err(|error| error.to_string())?;
+    add_column(
+        connection,
+        "product_consumptions",
+        "unit_cost REAL NOT NULL DEFAULT 0 CHECK(unit_cost>=0)",
+    )?;
+    let product_consumption_cost_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=20",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if product_consumption_cost_migration_applied == 0 {
+        connection
+            .execute(
+                "UPDATE product_consumptions
+                 SET unit_cost=COALESCE(
+                   (SELECT p.unit_price FROM products p WHERE p.id=product_consumptions.product_id),
+                   0
+                 )",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (20,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    add_column(connection, "packages", "product_id TEXT")?;
+    add_column(
+        connection,
+        "packages",
+        "consumption_quantity REAL NOT NULL DEFAULT 0 CHECK(consumption_quantity>=0)",
+    )?;
+    let material_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=18",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if material_migration_applied == 0 {
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 BEGIN;
+                 ALTER TABLE projects RENAME TO projects_legacy_v18;
+                 CREATE TABLE projects (
+                   id TEXT PRIMARY KEY,
+                   name TEXT NOT NULL UNIQUE,
+                   duration INTEGER NOT NULL CHECK(duration>0),
+                   price REAL NOT NULL CHECK(price>=0),
+                   product_id TEXT,
+                   consumption_quantity REAL NOT NULL DEFAULT 0 CHECK(consumption_quantity>=0),
+                   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
+                   created_at TEXT NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );
+                 INSERT INTO projects
+                   (id,name,duration,price,status,created_at,updated_at)
+                 SELECT id,name,duration,price,status,created_at,updated_at
+                 FROM projects_legacy_v18;
+                 DROP TABLE projects_legacy_v18;
+                 CREATE INDEX idx_projects_status_name ON projects(status,name);
+                 COMMIT;
+                 PRAGMA foreign_keys=ON;",
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (18,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS supply_purchases (
+               id TEXT PRIMARY KEY,
+               name TEXT NOT NULL,
+               category TEXT NOT NULL,
+               quantity REAL NOT NULL CHECK(quantity>0),
+               unit TEXT NOT NULL,
+               amount REAL NOT NULL CHECK(amount>=0),
+               purchased_at TEXT NOT NULL,
+               note TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_supply_purchases_date
+               ON supply_purchases(purchased_at,category);",
+        )
+        .map_err(|error| error.to_string())?;
+    let supply_purchase_migration_applied: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=19",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if supply_purchase_migration_applied == 0 {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (19,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    connection
         .execute(
             "UPDATE accounts SET display_name='木子店长' WHERE username='admin' AND display_name='慕姿店长'",
             [],
@@ -1660,7 +1939,8 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
     let projects = {
         let mut statement = connection
             .prepare(
-                "SELECT id,name,duration,price,status,created_at,updated_at
+                "SELECT id,name,duration,price,product_id,consumption_quantity,
+                        status,created_at,updated_at
                  FROM projects ORDER BY created_at DESC,id",
             )
             .map_err(|e| e.to_string())?;
@@ -1671,9 +1951,96 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     name: row.get(1)?,
                     duration: row.get(2)?,
                     price: row.get(3)?,
+                    product_id: row.get(4)?,
+                    consumption_quantity: row.get(5)?,
+                    status: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    let products = {
+        let mut statement = connection
+            .prepare(
+                "SELECT p.id,p.name,p.unit_price,
+                        p.initial_stock
+                          + COALESCE((SELECT SUM(e.quantity) FROM product_stock_entries e
+                                      WHERE e.product_id=p.id),0)
+                          + COALESCE((SELECT SUM(a.quantity) FROM product_stock_adjustments a
+                                      WHERE a.product_id=p.id),0)
+                          - COALESCE((SELECT SUM(c.quantity) FROM product_consumptions c
+                                      WHERE c.product_id=p.id AND c.status='active'),0) AS stock,
+                        p.status,p.created_at,p.updated_at
+                 FROM products p ORDER BY p.created_at DESC,p.id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(Product {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    unit_price: row.get(2)?,
+                    stock: row.get(3)?,
                     status: row.get(4)?,
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    let product_consumptions = {
+        let mut statement = connection
+            .prepare(
+                "SELECT id,service_id,product_id,product_name,quantity,unit_cost,source_type,source_id,
+                        member_name,employee,consumed_at,status
+                 FROM product_consumptions ORDER BY consumed_at DESC,id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(ProductConsumption {
+                    id: row.get(0)?,
+                    service_id: row.get(1)?,
+                    product_id: row.get(2)?,
+                    product_name: row.get(3)?,
+                    quantity: row.get(4)?,
+                    unit_cost: row.get(5)?,
+                    source_type: row.get(6)?,
+                    source_id: row.get(7)?,
+                    member_name: row.get(8)?,
+                    employee: row.get(9)?,
+                    consumed_at: row.get(10)?,
+                    status: row.get(11)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    let supply_purchases = {
+        let mut statement = connection
+            .prepare(
+                "SELECT id,name,category,quantity,unit,amount,purchased_at,note,created_at
+                 FROM supply_purchases ORDER BY purchased_at DESC,created_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(SupplyPurchase {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    category: row.get(2)?,
+                    quantity: row.get(3)?,
+                    unit: row.get(4)?,
+                    amount: row.get(5)?,
+                    purchased_at: row.get(6)?,
+                    note: row.get(7)?,
+                    created_at: row.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1780,7 +2147,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let packages = {
-        let mut statement = connection.prepare("SELECT id,name,price,total_uses,limit_type,validity_days,package_type,status,created_at,updated_at FROM packages ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,name,price,total_uses,limit_type,validity_days,package_type,product_id,consumption_quantity,status,created_at,updated_at FROM packages ORDER BY created_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackageDefinition {
@@ -1791,9 +2158,11 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     limit_type: row.get(4)?,
                     validity_days: row.get(5)?,
                     package_type: row.get(6)?,
-                    status: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    product_id: row.get(7)?,
+                    consumption_quantity: row.get(8)?,
+                    status: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1938,6 +2307,9 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
         transactions,
         services,
         projects,
+        products,
+        product_consumptions,
+        supply_purchases,
         employees,
         employee_compensations,
         employee_status_events,
@@ -2021,6 +2393,46 @@ mod tests {
             calculate_refundable_principal(1000.0, 1000.0, 1200.0, 0.0, 0.0),
             0.0
         );
+    }
+
+    #[test]
+    fn material_backfill_counts_historical_service_once_and_allows_free_projects() {
+        let connection = Connection::open_in_memory().expect("open database");
+        migrate_database(&connection).expect("initialize database");
+        connection
+            .execute_batch(
+                "INSERT INTO products
+                   (id,name,unit_price,initial_stock,status,created_at,updated_at)
+                 VALUES ('product','精华液',10,20,'active','2026-01-01','2026-01-01');
+                 INSERT INTO projects
+                   (id,name,duration,price,product_id,consumption_quantity,status,created_at,updated_at)
+                 VALUES ('project','赠送护理',60,0,'product',2,'active','2026-01-01','2026-01-01');
+                 INSERT INTO services
+                   (id,member_id,member_name,employee,service_name,service_type,duration,amount,
+                    commission,commission_rule_version,project_id,created_at,status)
+                 VALUES ('service',NULL,'散客','员工','赠送护理','普通手工',60,0,0,2,
+                         'project','2026-01-02','completed');",
+            )
+            .expect("prepare historical service");
+
+        backfill_product_consumptions_for_source(&connection, "project", "project")
+            .expect("first backfill");
+        backfill_product_consumptions_for_source(&connection, "project", "project")
+            .expect("idempotent backfill");
+
+        let (count, stock, consumption_cost): (i64, f64, f64) = connection
+            .query_row(
+                "SELECT COUNT(*),
+                        20-COALESCE(SUM(CASE WHEN status='active' THEN quantity ELSE 0 END),0),
+                        COALESCE(SUM(CASE WHEN status='active' THEN quantity*unit_cost ELSE 0 END),0)
+                 FROM product_consumptions WHERE product_id='product'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("material totals");
+        assert_eq!(count, 1);
+        assert_eq!(stock, 18.0);
+        assert_eq!(consumption_cost, 20.0);
     }
 
     #[test]

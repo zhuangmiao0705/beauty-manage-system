@@ -237,7 +237,7 @@ export function completeBrowserAppointment(
         : balancePaymentAmount > 0
           ? '会员余额'
           : input.externalPaymentMethod
-    const transactionId = crypto.randomUUID()
+    const transactionId = project.price > 0 ? crypto.randomUUID() : null
     snapshot.services.unshift({
       id: serviceId,
       memberId: appointment.memberId,
@@ -260,25 +260,27 @@ export function completeBrowserAppointment(
       createdAt: now,
       status: 'completed'
     })
-    snapshot.transactions.unshift({
-      id: transactionId,
-      memberId: member?.id ?? null,
-      memberName: appointment.customerName,
-      type: 'consume',
-      amount: project.price,
-      giftAmount: 0,
-      commission: 0,
-      commissionRuleVersion: COMMISSION_RULE_VERSION,
-      balanceAfter: member?.balance ?? 0,
-      paymentMethod,
-      item: project.name,
-      employee: appointment.employee,
-      createdAt: now,
-      note: '预约普通消费自动结算',
-      status: 'active',
-      sourceType: 'service',
-      sourceId: serviceId
-    })
+    if (transactionId) {
+      snapshot.transactions.unshift({
+        id: transactionId,
+        memberId: member?.id ?? null,
+        memberName: appointment.customerName,
+        type: 'consume',
+        amount: project.price,
+        giftAmount: 0,
+        commission: 0,
+        commissionRuleVersion: COMMISSION_RULE_VERSION,
+        balanceAfter: member?.balance ?? 0,
+        paymentMethod,
+        item: project.name,
+        employee: appointment.employee,
+        createdAt: now,
+        note: '预约普通消费自动结算',
+        status: 'active',
+        sourceType: 'service',
+        sourceId: serviceId
+      })
+    }
   }
   if (appointment.memberId) {
     const member = snapshot.members.find(item => item.id === appointment.memberId)

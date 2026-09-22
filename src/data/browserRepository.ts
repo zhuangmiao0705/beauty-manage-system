@@ -126,17 +126,29 @@ export function refundBrowserMemberAccount(
 ) {
   const member = state.members.find(item => item.id === input.memberId && item.status === 'active')
   if (!member) throw new Error('没有找到启用状态的会员')
+  const employee = state.employees.find(item => item.name === input.employee.trim())
+  if (!employee) throw new Error('请选择有效的绩效归属员工')
   if (member.principalBalance <= 0 && member.giftBalance <= 0)
     throw new Error('该会员账户没有可退款或可清除的余额')
-  const refundAmount = member.refundablePrincipal
-  const giftForfeitedAmount =
-    Math.round((member.giftBalance + Math.max(0, member.principalBalance - refundAmount)) * 100) /
-    100
+  const refundAmount = Math.round(input.amount * 100) / 100
+  const availableRefund = member.refundablePrincipal
+  if (!Number.isFinite(refundAmount) || refundAmount <= 0) throw new Error('退款金额必须大于0')
+  if (refundAmount > availableRefund + 0.001)
+    throw new Error(`退款金额不能超过当前可退本金${availableRefund.toFixed(2)}元`)
+  const isFullRefund = refundAmount >= availableRefund - 0.001
+  const principalAfter = isFullRefund
+    ? 0
+    : Math.round(Math.max(0, member.principalBalance - refundAmount) * 100) / 100
+  const giftAfter = isFullRefund ? 0 : member.giftBalance
+  const giftForfeitedAmount = isFullRefund
+    ? Math.round((member.giftBalance + Math.max(0, member.principalBalance - refundAmount)) * 100) /
+      100
+    : 0
   const now = new Date().toISOString()
-  member.balance = 0
-  member.principalBalance = 0
-  member.giftBalance = 0
-  member.refundablePrincipal = 0
+  member.balance = Math.round((principalAfter + giftAfter) * 100) / 100
+  member.principalBalance = principalAfter
+  member.giftBalance = giftAfter
+  member.refundablePrincipal = Math.round(Math.max(0, availableRefund - refundAmount) * 100) / 100
   member.lastVisit = now
   state.refundRecords.unshift({
     id: crypto.randomUUID(),
@@ -149,9 +161,9 @@ export function refundBrowserMemberAccount(
     cashAmount: refundAmount,
     giftForfeitedAmount,
     commission: 0,
-    employee: '',
+    employee: employee.name,
     operator,
-    balanceAfter: 0,
+    balanceAfter: member.balance,
     createdAt: now,
     note: input.note.trim() || '会员账户本金退款'
   })
@@ -189,7 +201,7 @@ export function addBrowserService(state: AppSnapshot, input: ServiceInput) {
         ? '会员余额'
         : input.externalPaymentMethod
   const now = new Date().toISOString()
-  const transactionId = crypto.randomUUID()
+  const transactionId = project.price > 0 ? crypto.randomUUID() : null
   state.services.unshift({
     id: input.requestId,
     memberId: member?.id ?? null,
@@ -214,25 +226,27 @@ export function addBrowserService(state: AppSnapshot, input: ServiceInput) {
     createdAt: now,
     status: 'completed'
   })
-  state.transactions.unshift({
-    id: transactionId,
-    memberId: member?.id ?? null,
-    memberName: member?.name ?? input.guestName.trim(),
-    type: 'consume',
-    amount: project.price,
-    giftAmount: 0,
-    commission: 0,
-    commissionRuleVersion: COMMISSION_RULE_VERSION,
-    balanceAfter: member?.balance ?? 0,
-    paymentMethod,
-    item: project.name,
-    employee: employee.name,
-    createdAt: now,
-    note: '普通消费自动结算',
-    status: 'active',
-    sourceType: 'service',
-    sourceId: input.requestId
-  })
+  if (transactionId) {
+    state.transactions.unshift({
+      id: transactionId,
+      memberId: member?.id ?? null,
+      memberName: member?.name ?? input.guestName.trim(),
+      type: 'consume',
+      amount: project.price,
+      giftAmount: 0,
+      commission: 0,
+      commissionRuleVersion: COMMISSION_RULE_VERSION,
+      balanceAfter: member?.balance ?? 0,
+      paymentMethod,
+      item: project.name,
+      employee: employee.name,
+      createdAt: now,
+      note: '普通消费自动结算',
+      status: 'active',
+      sourceType: 'service',
+      sourceId: input.requestId
+    })
+  }
   if (member) member.lastVisit = now
 }
 
@@ -245,10 +259,21 @@ export function cancelBrowserService(state: AppSnapshot, serviceId: string) {
         state.packageConsumptions.some(
           consumption => consumption.serviceId === item.id && consumption.status === 'active'
         )) ||
-        (item.serviceType === '普通手工' && item.transactionId))
+        item.serviceType === '普通手工')
   )
   if (!service) throw new Error('该服务不存在、已撤销或不支持撤销')
   const now = new Date().toISOString()
+  const productConsumption = state.productConsumptions.find(
+    item => item.serviceId === service.id && item.status === 'active'
+  )
+  if (productConsumption) {
+    productConsumption.status = 'cancelled'
+    const product = state.products.find(item => item.id === productConsumption.productId)
+    if (product) {
+      product.stock = Math.round((product.stock + productConsumption.quantity) * 100) / 100
+      product.updatedAt = now
+    }
+  }
   if (service.packagePurchaseId) {
     const consumption = state.packageConsumptions.find(
       item => item.serviceId === service.id && item.status === 'active'

@@ -42,6 +42,7 @@ const selectedMember = ref<Member | null>(null)
 const saving = ref(false)
 const memberFormRef = ref<FormInstance>()
 const transactionFormRef = ref<FormInstance>()
+const accountRefundFormRef = ref<FormInstance>()
 const memberForm = reactive<MemberInput>({
   name: '',
   phone: '',
@@ -59,7 +60,7 @@ const transactionForm = reactive<TransactionInput>({
   employee: '',
   note: ''
 })
-const accountRefundForm = reactive({ note: '' })
+const accountRefundForm = reactive({ amount: 0, employee: '', note: '' })
 const memberGiftRule: FormItemRule = {
   trigger: 'change',
   validator: (_rule, value, callback) => {
@@ -88,6 +89,28 @@ const transactionRules: FormRules<TransactionInput> = {
   paymentMethod: [{ required: true, message: '请选择支付方式', trigger: 'change' }],
   employee: [{ required: true, message: '请选择经办员工', trigger: 'change' }]
 }
+const accountRefundRules = computed<FormRules<typeof accountRefundForm>>(() => ({
+  amount: [
+    {
+      required: true,
+      trigger: ['blur', 'change'],
+      validator: (_rule, value, callback) => {
+        const amount = Number(value)
+        const available = selectedMember.value?.refundablePrincipal ?? 0
+        if (!Number.isFinite(amount) || amount <= 0) callback(new Error('请输入大于0的退款金额'))
+        else if (amount > available + 0.001)
+          callback(new Error(`退款金额不能超过${currency(available)}`))
+        else callback()
+      }
+    }
+  ],
+  employee: [{ required: true, message: '请选择绩效归属员工', trigger: 'change' }]
+}))
+const accountRefundIsFull = computed(
+  () =>
+    !!selectedMember.value &&
+    accountRefundForm.amount >= selectedMember.value.refundablePrincipal - 0.001
+)
 
 const filteredMembers = computed(() =>
   salonStore.members.filter(member => {
@@ -181,7 +204,16 @@ const openDetail = (member: Member) => {
 }
 const openAccountRefund = (member: Member) => {
   selectedMember.value = member
-  accountRefundForm.note = ''
+  const latestRecharge = [...salonStore.transactions]
+    .filter(
+      item => item.memberId === member.id && item.type === 'recharge' && item.status !== 'cancelled'
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+  Object.assign(accountRefundForm, {
+    amount: member.refundablePrincipal,
+    employee: latestRecharge?.employee ?? '',
+    note: ''
+  })
   modal.value = 'accountRefund'
 }
 
@@ -227,13 +259,20 @@ async function submitTransaction() {
 async function submitAccountRefund() {
   const member = selectedMember.value
   if (!member) return
-  const refundAmount = member.refundablePrincipal
-  const consumedGiftOffset = Math.max(0, member.principalBalance - refundAmount)
+  if (!(await validateForm(accountRefundFormRef.value))) return
+  const refundAmount = accountRefundForm.amount
+  const isFullRefund = refundAmount >= member.refundablePrincipal - 0.001
+  const consumedGiftOffset = isFullRefund ? Math.max(0, member.principalBalance - refundAmount) : 0
+  const principalAfter = isFullRefund ? 0 : Math.max(0, member.principalBalance - refundAmount)
+  const giftAfter = isFullRefund ? 0 : member.giftBalance
   const message = [
     `确认退还本金 ${currency(refundAmount)} 吗？`,
+    `本次退款将冲减 ${accountRefundForm.employee} 在退款月份的充值绩效。`,
     consumedGiftOffset > 0 ? `已消费赠送金额将从本金中扣除 ${currency(consumedGiftOffset)}。` : '',
-    member.giftBalance > 0 ? `同时清除赠送余额 ${currency(member.giftBalance)}。` : '',
-    '退款后账户余额为 ¥0.00，会员资料和历史记录仍会保留，此操作不可撤销。'
+    isFullRefund && member.giftBalance > 0
+      ? `同时清除赠送余额 ${currency(member.giftBalance)}。`
+      : '',
+    `退款后账户余额为 ${currency(principalAfter + giftAfter)}，会员资料和历史记录仍会保留，此操作不可撤销。`
   ]
     .filter(Boolean)
     .join('\n')
@@ -248,7 +287,12 @@ async function submitAccountRefund() {
   }
   saving.value = true
   try {
-    await refundMemberAccount({ memberId: member.id, note: accountRefundForm.note })
+    await refundMemberAccount({
+      memberId: member.id,
+      amount: refundAmount,
+      employee: accountRefundForm.employee,
+      note: accountRefundForm.note
+    })
     modal.value = null
     notify(`账户退款已登记，本次退款 ${currency(refundAmount)}`)
   } catch (reason) {
@@ -438,7 +482,7 @@ async function submitAccountRefund() {
                   size="small"
                   type="danger"
                   plain
-                  :disabled="member.principalBalance <= 0 && member.giftBalance <= 0"
+                  :disabled="member.refundablePrincipal <= 0"
                   @click="openAccountRefund(member as Member)"
                 >
                   <RotateCcw :size="15" />
@@ -779,15 +823,42 @@ async function submitAccountRefund() {
           </strong>
         </div>
         <div>
-          <span>本次退款金额</span>
+          <span>当前可退本金</span>
           <strong class="money">{{ currency(selectedMember.refundablePrincipal) }}</strong>
         </div>
         <div>
-          <span>清除赠送余额</span>
+          <span>{{ accountRefundIsFull ? '将清除赠送余额' : '将保留赠送余额' }}</span>
           <strong>{{ currency(selectedMember.giftBalance) }}</strong>
         </div>
       </div>
-      <el-form label-position="top" style="margin-top: 10px">
+      <el-form
+        ref="accountRefundFormRef"
+        :model="accountRefundForm"
+        :rules="accountRefundRules"
+        label-position="top"
+        style="margin-top: 10px"
+        scroll-to-error
+      >
+        <div class="form-grid">
+          <el-form-item label="本次退款金额" prop="amount">
+            <el-input-number
+              v-model="accountRefundForm.amount"
+              :min="0.01"
+              :max="selectedMember.refundablePrincipal"
+              :precision="2"
+              :controls="false"
+              align="left"
+            />
+            <div class="form-tip">最多可退 {{ currency(selectedMember.refundablePrincipal) }}</div>
+          </el-form-item>
+          <el-form-item label="绩效归属员工" prop="employee">
+            <EmployeeSelect
+              v-model="accountRefundForm.employee"
+              :active-only="false"
+              placeholder="请选择需要冲减绩效的员工"
+            />
+          </el-form-item>
+        </div>
         <el-form-item label="退款备注">
           <el-input
             v-model="accountRefundForm.note"
@@ -800,7 +871,7 @@ async function submitAccountRefund() {
         </el-form-item>
       </el-form>
       <div class="form-tip">
-        实际退款按累计充值本金减去有效账户余额消费计算；未使用赠送余额将同时清零。
+        部分退款仅扣减本次退款本金；退还全部可退本金时，剩余赠送余额将同时清零。
       </div>
       <template #footer>
         <el-button @click="modal = null">取消</el-button>

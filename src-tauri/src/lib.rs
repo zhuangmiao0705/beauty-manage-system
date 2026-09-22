@@ -18,6 +18,10 @@ use commands::{
         update_package,
     },
     payroll::{get_employee_salaries, update_commission_config, upsert_attendance},
+    products::{
+        add_product_stock, create_product, create_supply_purchase, delete_supply_purchase,
+        update_product,
+    },
     projects::{create_project, set_project_status, update_project},
     salon::{
         cancel_service, create_employee, create_member, create_service, create_transaction,
@@ -79,6 +83,11 @@ pub fn run() {
             create_project,
             update_project,
             set_project_status,
+            create_product,
+            update_product,
+            add_product_stock,
+            create_supply_purchase,
+            delete_supply_purchase,
             create_appointment,
             update_appointment,
             set_appointment_status,
