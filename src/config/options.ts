@@ -66,10 +66,10 @@ export const TRANSACTION_DEFAULTS: Record<
 }
 
 export const REPORT_RANGES = {
-  day: { label: '今日', days: 1, points: 8 },
-  month: { label: '近30天', days: 30, points: 10 },
-  quarter: { label: '近一季度', days: 90, points: 12 },
-  year: { label: '近一年', days: 365, points: 12 }
+  day: { label: '今日' },
+  month: { label: '当月' },
+  quarter: { label: '当季' },
+  year: { label: '当年' }
 } as const
 
 export type ReportRange = keyof typeof REPORT_RANGES

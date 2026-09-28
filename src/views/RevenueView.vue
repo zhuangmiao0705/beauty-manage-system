@@ -21,24 +21,45 @@ import { salonStore } from '../data/repository'
 import {
   buildAmountTrend,
   buildEmployeeStats,
+  buildNaturalMonthAmountTrend,
+  buildNaturalYearAmountTrend,
+  isInReportRange,
+  recordsInNaturalMonth,
+  recordsInNaturalYear,
   recordsInRange,
   type AmountTrendRecord,
   type TrendAggregation
 } from '../services/reporting'
-import { currency, dateFromDaysAgo, downloadCsv } from '../utils'
+import { currency, downloadCsv, localMonthKey } from '../utils'
 import { notify } from '../utils/feedback'
 
-const range = ref<ReportRange>('day')
+type RevenueRange = ReportRange | 'naturalMonth' | 'naturalYear'
+
+const range = ref<RevenueRange>('day')
+const naturalMonth = ref(localMonthKey())
+const naturalYear = ref(String(new Date().getFullYear()))
 type RevenueMetric =
   'actualIncome' | 'recharge' | 'boxPackage' | 'normalPackage' | 'serviceAverage' | 'consumption'
 
 const selectedMetric = ref<RevenueMetric>('actualIncome')
-const rangeLabel = computed(() => REPORT_RANGES[range.value].label)
-const transactions = computed(() => recordsInRange(salonStore.transactions, range.value))
-const refunds = computed(() => recordsInRange(salonStore.refundRecords, range.value))
+const rangeLabel = computed(() => {
+  if (range.value === 'naturalMonth') {
+    const [year, month] = naturalMonth.value.split('-')
+    return year && month ? `${year}年${Number(month)}月` : '自然月'
+  }
+  if (range.value === 'naturalYear') return naturalYear.value ? `${naturalYear.value}年` : '自然年'
+  return REPORT_RANGES[range.value].label
+})
+function recordsInSelectedRange<T extends { createdAt: string }>(records: readonly T[]) {
+  if (range.value === 'naturalMonth') return recordsInNaturalMonth(records, naturalMonth.value)
+  if (range.value === 'naturalYear') return recordsInNaturalYear(records, naturalYear.value)
+  return recordsInRange(records, range.value)
+}
+const transactions = computed(() => recordsInSelectedRange(salonStore.transactions))
+const refunds = computed(() => recordsInSelectedRange(salonStore.refundRecords))
 const packageRefunds = computed(() => refunds.value.filter(item => item.refundType === 'package'))
 const services = computed(() =>
-  recordsInRange(salonStore.services, range.value).filter(item => item.status === 'completed')
+  recordsInSelectedRange(salonStore.services).filter(item => item.status === 'completed')
 )
 const consumption = computed(
   () =>
@@ -57,8 +78,18 @@ const recharge = computed(
       .reduce((sum, item) => sum + item.amount, 0)
 )
 const packagePurchases = computed(() => {
-  const cutoff = dateFromDaysAgo(REPORT_RANGES[range.value].days)
-  return salonStore.packagePurchases.filter(item => new Date(item.purchasedAt) >= cutoff)
+  if (range.value === 'naturalMonth') {
+    return salonStore.packagePurchases.filter(
+      item => localMonthKey(item.purchasedAt) === naturalMonth.value
+    )
+  }
+  if (range.value === 'naturalYear') {
+    return salonStore.packagePurchases.filter(item =>
+      localMonthKey(item.purchasedAt).startsWith(`${naturalYear.value}-`)
+    )
+  }
+  const reportRange = range.value as ReportRange
+  return salonStore.packagePurchases.filter(item => isInReportRange(item.purchasedAt, reportRange))
 })
 const boxPackageSales = computed(
   () =>
@@ -231,9 +262,27 @@ const selectedMetricRecords = computed<AmountTrendRecord[]>(() => {
       ]
   }
 })
-const trend = computed(() =>
-  buildAmountTrend(selectedMetricRecords.value, range.value, selectedMetricMeta.value.aggregation)
-)
+const trend = computed(() => {
+  if (range.value === 'naturalMonth') {
+    return buildNaturalMonthAmountTrend(
+      selectedMetricRecords.value,
+      naturalMonth.value,
+      selectedMetricMeta.value.aggregation
+    )
+  }
+  if (range.value === 'naturalYear') {
+    return buildNaturalYearAmountTrend(
+      selectedMetricRecords.value,
+      naturalYear.value,
+      selectedMetricMeta.value.aggregation
+    )
+  }
+  return buildAmountTrend(
+    selectedMetricRecords.value,
+    range.value,
+    selectedMetricMeta.value.aggregation
+  )
+})
 
 const employeeStats = computed(() => buildEmployeeStats(salonStore.employees, services.value))
 const {
@@ -259,11 +308,35 @@ function exportReport() {
 <template>
   <div class="page">
     <section class="section-toolbar">
-      <el-radio-group v-model="range" class="salon-radio-group">
-        <el-radio-button v-for="(item, key) in REPORT_RANGES" :key="key" :value="key">
-          {{ item.label }}
-        </el-radio-button>
-      </el-radio-group>
+      <div class="revenue-range-controls">
+        <el-radio-group v-model="range" class="salon-radio-group">
+          <el-radio-button v-for="(item, key) in REPORT_RANGES" :key="key" :value="key">
+            {{ item.label }}
+          </el-radio-button>
+          <el-radio-button value="naturalMonth">自然月</el-radio-button>
+          <el-radio-button value="naturalYear">自然年</el-radio-button>
+        </el-radio-group>
+        <el-date-picker
+          v-if="range === 'naturalMonth'"
+          v-model="naturalMonth"
+          type="month"
+          value-format="YYYY-MM"
+          format="YYYY年MM月"
+          :clearable="false"
+          class="natural-month-picker"
+          placeholder="请选择月份"
+        />
+        <el-date-picker
+          v-if="range === 'naturalYear'"
+          v-model="naturalYear"
+          type="year"
+          value-format="YYYY"
+          format="YYYY年"
+          :clearable="false"
+          class="natural-month-picker"
+          placeholder="请选择年份"
+        />
+      </div>
       <el-button @click="exportReport">
         <Download :size="17" />
         导出报表
@@ -439,6 +512,17 @@ function exportReport() {
 </template>
 
 <style scoped>
+.revenue-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.natural-month-picker {
+  width: 156px;
+}
+
 .revenue-metric-card {
   cursor: pointer;
   transition:
@@ -459,5 +543,15 @@ function exportReport() {
 .revenue-metric-card:focus-visible {
   outline: 2px solid var(--color-primary, #d8657e);
   outline-offset: 2px;
+}
+
+@media (max-width: 720px) {
+  .revenue-range-controls {
+    width: 100%;
+  }
+
+  .natural-month-picker {
+    width: 100%;
+  }
 }
 </style>

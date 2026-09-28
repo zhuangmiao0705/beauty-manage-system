@@ -35,6 +35,7 @@ import { errorMessage, notify } from '../utils/feedback'
 import { positiveNumberRule, validateForm } from '../utils/validation'
 
 type PurchaseFilters = {
+  memberName: string
   memberPhone: string
   employee: string
   packageId: string
@@ -42,6 +43,7 @@ type PurchaseFilters = {
   status: string
 }
 const purchaseFilterForm = reactive<PurchaseFilters>({
+  memberName: '',
   memberPhone: '',
   employee: '',
   packageId: '',
@@ -207,6 +209,8 @@ watch(
 )
 const filteredPurchases = computed(() =>
   salonStore.packagePurchases.filter(item => {
+    const memberName = appliedPurchaseFilters.memberName.trim()
+    if (memberName && !item.memberName.includes(memberName)) return false
     const phone = appliedPurchaseFilters.memberPhone.trim()
     if (phone && !memberPhone(item.memberId).includes(phone)) return false
     if (appliedPurchaseFilters.employee && item.employee !== appliedPurchaseFilters.employee)
@@ -261,6 +265,7 @@ function queryPurchases() {
 
 function resetPurchaseFilters() {
   Object.assign(purchaseFilterForm, {
+    memberName: '',
     memberPhone: '',
     employee: '',
     packageId: '',
@@ -433,6 +438,16 @@ async function submitPackageRefund() {
 
     <section class="panel table-panel">
       <div class="table-toolbar element-toolbar table-filter-toolbar">
+        <label class="table-filter-field">
+          <span>会员姓名</span>
+          <el-input
+            v-model="purchaseFilterForm.memberName"
+            clearable
+            class="table-filter-input"
+            placeholder="请输入会员姓名"
+            @keyup.enter="queryPurchases"
+          />
+        </label>
         <label class="table-filter-field">
           <span>会员手机号</span>
           <el-input
