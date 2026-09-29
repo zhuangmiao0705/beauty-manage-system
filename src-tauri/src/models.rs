@@ -100,6 +100,7 @@ pub(crate) struct ServiceRecord {
     pub(crate) member_id: Option<String>,
     pub(crate) member_name: String,
     pub(crate) employee: String,
+    pub(crate) employees: Vec<String>,
     pub(crate) service_name: String,
     pub(crate) service_type: String,
     pub(crate) duration: i64,
@@ -394,7 +395,10 @@ pub(crate) struct ServiceInput {
     pub(crate) request_id: String,
     pub(crate) member_id: String,
     pub(crate) guest_name: String,
+    #[serde(default)]
     pub(crate) employee: String,
+    #[serde(default)]
+    pub(crate) employees: Vec<String>,
     pub(crate) project_id: String,
     pub(crate) external_payment_method: String,
 }

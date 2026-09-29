@@ -46,12 +46,15 @@ pub(crate) fn insert_normal_service(
     service_id: &str,
     member_id: Option<&str>,
     guest_name: &str,
-    employee: &str,
+    employees: &[String],
     project_id: &str,
     external_payment_method: &str,
     allow_inactive_project: bool,
     now: &str,
 ) -> Result<String, String> {
+    let employee = employees
+        .first()
+        .ok_or_else(|| "请至少选择一位服务员工".to_string())?;
     let (project_name, duration, price): (String, i64, f64) = transaction
         .query_row(
             "SELECT name,duration,price FROM projects
@@ -150,6 +153,20 @@ pub(crate) fn insert_normal_service(
                 error.to_string()
             }
         })?;
+    for assigned_employee in employees {
+        let assigned_compensation = employee_compensation_for_name(transaction, assigned_employee)?;
+        transaction
+            .execute(
+                "INSERT INTO service_employees(service_id,employee,commission)
+                 VALUES (?1,?2,?3)",
+                params![
+                    service_id,
+                    assigned_employee,
+                    round_money(assigned_compensation.normal_service_commission)
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     record_product_consumption_for_service(transaction, service_id)?;
     if let Some(transaction_id) = transaction_id {
         transaction
@@ -483,7 +500,21 @@ pub(crate) fn create_service(
         .connection
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
-    let employee = validate_active_employee(&connection, &input.employee)?;
+    let requested_employees = if input.employees.is_empty() {
+        vec![input.employee.as_str()]
+    } else {
+        input.employees.iter().map(String::as_str).collect()
+    };
+    let mut employees = Vec::new();
+    for requested_employee in requested_employees {
+        let employee = validate_active_employee(&connection, requested_employee)?;
+        if !employees.contains(&employee) {
+            employees.push(employee);
+        }
+    }
+    if employees.is_empty() {
+        return Err("请至少选择一位服务员工".to_string());
+    }
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -493,7 +524,7 @@ pub(crate) fn create_service(
         input.request_id.trim(),
         (!input.member_id.trim().is_empty()).then_some(input.member_id.as_str()),
         &input.guest_name,
-        &employee,
+        &employees,
         &input.project_id,
         &input.external_payment_method,
         false,

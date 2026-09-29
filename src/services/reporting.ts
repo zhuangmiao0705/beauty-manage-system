@@ -1,6 +1,6 @@
 import type { ReportRange } from '../config/options'
 import type { Employee, ServiceRecord, TransactionRecord } from '../types'
-import { daysInMonth, localDateKey, localMonthKey } from '../utils'
+import { daysInMonth, localDateKey, localMonthKey, serviceHasEmployee } from '../utils'
 
 export interface AmountTrendRecord {
   createdAt: string
@@ -175,7 +175,7 @@ export function buildEmployeeStats(
 ) {
   return employees
     .map(employee => {
-      const records = services.filter(item => item.employee === employee.name)
+      const records = services.filter(item => serviceHasEmployee(item, employee.name))
       return {
         ...employee,
         count: records.length,

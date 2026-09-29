@@ -415,7 +415,7 @@ pub(crate) fn complete_appointment(
             &service_id,
             appointment.1.as_deref(),
             &appointment.2,
-            &employee,
+            std::slice::from_ref(&employee),
             project_id,
             &input.external_payment_method,
             true,

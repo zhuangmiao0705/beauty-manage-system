@@ -19,7 +19,7 @@ import type {
   ProjectDefinitionInput,
   SupplyPurchaseInput
 } from '../types'
-import { isPackagePurchaseAvailable, localMonthKey } from '../utils'
+import { isPackagePurchaseAvailable, localMonthKey, serviceHasEmployee } from '../utils'
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100
 
@@ -102,7 +102,7 @@ function cleanupDefaultEmployees(snapshot: AppSnapshot) {
     if (!employee) return
     const used =
       snapshot.transactions.some(item => item.employee === name) ||
-      snapshot.services.some(item => item.employee === name) ||
+      snapshot.services.some(item => serviceHasEmployee(item, name)) ||
       snapshot.packagePurchases.some(item => item.employee === name) ||
       snapshot.packageConsumptions.some(item => item.employee === name) ||
       snapshot.appointments.some(item => item.employee === name) ||
@@ -260,6 +260,14 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   snapshot.supplyPurchases ??= []
   snapshot.appointments ??= []
 
+  snapshot.services.forEach(service => {
+    service.employees = [
+      ...new Set(
+        (service.employees?.length ? service.employees : [service.employee]).filter(Boolean)
+      )
+    ]
+  })
+
   cleanupDefaultEmployees(snapshot)
 
   if (!snapshot.commissionConfigs.length) {
@@ -335,7 +343,11 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   snapshot.employees.forEach(employee => {
     employee.createdAt ??=
       [...snapshot.services, ...snapshot.transactions]
-        .filter(item => item.employee === employee.name)
+        .filter(item =>
+          'serviceName' in item
+            ? serviceHasEmployee(item, employee.name)
+            : item.employee === employee.name
+        )
         .map(item => item.createdAt)
         .sort()[0] ?? now
     if (!snapshot.employeeStatusEvents.some(item => item.employeeId === employee.id)) {

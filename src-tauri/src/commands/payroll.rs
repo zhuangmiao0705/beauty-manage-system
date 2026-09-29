@@ -299,8 +299,11 @@ pub(crate) fn get_employee_salaries(
         let package_purchase_amount = round_money(package_purchase_amount - package_refund_amount);
         let normal_service_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM services
-                 WHERE employee=?1 AND service_type='普通手工' AND status='completed'
+                "SELECT COUNT(*) FROM services s
+                 WHERE (s.employee=?1 OR EXISTS(
+                   SELECT 1 FROM service_employees se
+                   WHERE se.service_id=s.id AND se.employee=?1
+                 )) AND s.service_type='普通手工' AND s.status='completed'
                    AND created_at>=?2 AND created_at<?3",
                 params![name, start_text, end_text],
                 |row| row.get(0),
@@ -308,8 +311,11 @@ pub(crate) fn get_employee_salaries(
             .map_err(|error| error.to_string())?;
         let package_service_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM services
-                 WHERE employee=?1 AND service_type='套盒手工' AND status='completed'
+                "SELECT COUNT(*) FROM services s
+                 WHERE (s.employee=?1 OR EXISTS(
+                   SELECT 1 FROM service_employees se
+                   WHERE se.service_id=s.id AND se.employee=?1
+                 )) AND s.service_type='套盒手工' AND s.status='completed'
                    AND created_at>=?2 AND created_at<?3",
                 params![name, start_text, end_text],
                 |row| row.get(0),

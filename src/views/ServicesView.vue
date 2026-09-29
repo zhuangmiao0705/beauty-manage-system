@@ -6,14 +6,21 @@ import type { FormInstance, FormItemRule, FormRules } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { Clock3, Filter, Plus, Scissors, Search, Sparkles } from 'lucide-vue-next'
 import BaseModal from '../components/BaseModal.vue'
-import EmployeeSelect from '../components/EmployeeSelect.vue'
 import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
 import { authStore } from '../auth'
 import { RECHARGE_PAYMENT_METHODS, SERVICE_TYPE_LABELS, SERVICE_TYPES } from '../config/options'
 import { addService, cancelService, salonStore } from '../data/repository'
 import type { ExternalPaymentMethod, ServiceInput, ServiceRecord, ServiceType } from '../types'
-import { currency, dateTime, isToday, localDateKey } from '../utils'
+import {
+  currency,
+  dateTime,
+  isToday,
+  localDateKey,
+  serviceEmployeeLabel,
+  serviceEmployeeNames,
+  serviceHasEmployee
+} from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
 import { validateForm } from '../utils/validation'
 
@@ -46,7 +53,7 @@ const form = reactive<ServiceForm>({
   requestId: crypto.randomUUID(),
   memberId: '',
   guestName: '游客',
-  employee: '',
+  employees: [],
   projectId: '',
   externalPaymentMethod: ''
 })
@@ -70,7 +77,15 @@ const rules: FormRules<ServiceForm> = {
   customerType: [{ required: true, message: '请选择消费对象', trigger: 'change' }],
   memberId: [memberRule],
   guestName: [guestRule],
-  employee: [{ required: true, message: '请选择服务员工', trigger: 'change' }],
+  employees: [
+    {
+      required: true,
+      type: 'array',
+      min: 1,
+      message: '请至少选择一位服务员工',
+      trigger: 'change'
+    }
+  ],
   projectId: [{ required: true, message: '请选择消费项目', trigger: 'change' }],
   externalPaymentMethod: [
     {
@@ -121,7 +136,7 @@ const filtered = computed(() =>
       !item.memberName.includes(appliedFilters.memberName.trim())
     )
       return false
-    if (appliedFilters.employee && item.employee !== appliedFilters.employee) return false
+    if (appliedFilters.employee && !serviceHasEmployee(item, appliedFilters.employee)) return false
     if (
       appliedFilters.serviceType &&
       (item.serviceType ?? '普通手工') !== appliedFilters.serviceType
@@ -144,7 +159,10 @@ const totalAmount = computed(() =>
   completedServices.value.reduce((sum, item) => sum + item.amount, 0)
 )
 const totalMinutes = computed(() =>
-  completedServices.value.reduce((sum, item) => sum + item.duration, 0)
+  completedServices.value.reduce(
+    (sum, item) => sum + item.duration * serviceEmployeeNames(item).length,
+    0
+  )
 )
 
 function queryServices() {
@@ -164,7 +182,7 @@ function openModal() {
     requestId: crypto.randomUUID(),
     memberId: '',
     guestName: '游客',
-    employee: '',
+    employees: [],
     projectId: '',
     externalPaymentMethod: ''
   })
@@ -198,7 +216,7 @@ async function submit() {
     await addService({
       memberId: form.customerType === 'guest' ? '' : form.memberId,
       guestName: form.customerType === 'guest' ? form.guestName.trim() : '',
-      employee: form.employee,
+      employees: [...form.employees],
       projectId: form.projectId,
       externalPaymentMethod: form.externalPaymentMethod,
       requestId: form.requestId
@@ -384,8 +402,8 @@ async function cancelRecord(service: ServiceRecord) {
         <el-table-column label="服务员工" min-width="120">
           <template #default="{ row }">
             <div class="employee-inline">
-              <span>{{ row.employee.slice(-1) }}</span>
-              {{ row.employee }}
+              <span>{{ serviceEmployeeLabel(row as ServiceRecord).slice(-1) }}</span>
+              {{ serviceEmployeeLabel(row as ServiceRecord) }}
             </div>
           </template>
         </el-table-column>
@@ -446,8 +464,23 @@ async function cancelRecord(service: ServiceRecord) {
     >
       <el-form ref="formRef" :model="form" :rules="rules" scroll-to-error label-position="top">
         <div class="form-grid">
-          <el-form-item label="服务员工" prop="employee">
-            <EmployeeSelect v-model="form.employee" />
+          <el-form-item label="服务员工" prop="employees">
+            <el-select
+              v-model="form.employees"
+              multiple
+              filterable
+              clearable
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="请选择一位或多位服务员工"
+            >
+              <el-option
+                v-for="employee in salonStore.employees.filter(item => item.status === 'active')"
+                :key="employee.id"
+                :label="`${employee.name} · ${employee.role}`"
+                :value="employee.name"
+              />
+            </el-select>
           </el-form-item>
           <el-form-item label="消费对象" prop="customerType">
             <el-radio-group v-model="form.customerType">

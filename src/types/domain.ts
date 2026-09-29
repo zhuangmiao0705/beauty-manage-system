@@ -48,6 +48,7 @@ export interface ServiceRecord {
   memberId: string | null
   memberName: string
   employee: string
+  employees?: readonly string[]
   serviceName: string
   serviceType: ServiceType
   duration: number
@@ -325,7 +326,7 @@ export interface TransactionInput {
 export interface ServiceInput {
   requestId: string
   memberId: string
-  employee: string
+  employees: string[]
   guestName: string
   projectId: string
   externalPaymentMethod: ExternalPaymentMethod | ''

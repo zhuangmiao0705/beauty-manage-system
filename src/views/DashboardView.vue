@@ -17,7 +17,7 @@ import RevenueLineChart from '../components/RevenueLineChart.vue'
 import { authStore } from '../auth'
 import { salonStore } from '../data/repository'
 import { APPOINTMENT_STATUS_OPTIONS } from '../config/options'
-import { currency, dateTime, fullDateTime, isToday } from '../utils'
+import { currency, dateTime, fullDateTime, isToday, serviceHasEmployee } from '../utils'
 
 const router = useRouter()
 const todayTransactions = computed(() =>
@@ -93,7 +93,7 @@ const employeeRanking = computed(() =>
   salonStore.employees
     .filter(employee => employee.status === 'active')
     .map(employee => {
-      const records = todayServices.value.filter(item => item.employee === employee.name)
+      const records = todayServices.value.filter(item => serviceHasEmployee(item, employee.name))
       return {
         ...employee,
         count: records.length,

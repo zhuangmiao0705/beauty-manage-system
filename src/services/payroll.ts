@@ -4,7 +4,7 @@ import {
   STANDARD_MONTHLY_REST_DAYS
 } from '../config/options'
 import type { AppSnapshot, Employee, EmployeeSalaryRow, ServiceType } from '../types'
-import { daysInMonth, isInMonth } from '../utils'
+import { daysInMonth, isInMonth, serviceHasEmployee } from '../utils'
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100
 
@@ -59,7 +59,7 @@ export function buildHandworkDetails(
     .filter(
       item =>
         item.status === 'completed' &&
-        item.employee === employee.name &&
+        serviceHasEmployee(item, employee.name) &&
         isInMonth(item.createdAt, month)
     )
     .map(item => ({
@@ -246,14 +246,14 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
         item =>
           item.status === 'completed' &&
           item.serviceType === '套盒手工' &&
-          item.employee === employee.name &&
+          serviceHasEmployee(item, employee.name) &&
           isInMonth(item.createdAt, month)
       )
       const normalServices = snapshot.services.filter(
         item =>
           item.status === 'completed' &&
           item.serviceType === '普通手工' &&
-          item.employee === employee.name &&
+          serviceHasEmployee(item, employee.name) &&
           isInMonth(item.createdAt, month)
       )
       const baseSalary = roundMoney((compensation.baseSalary / standardWorkDays) * workDays)

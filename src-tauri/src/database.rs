@@ -1,6 +1,7 @@
 use crate::{models::*, security::hash_password};
 use chrono::{Local, Utc};
 use rusqlite::{params, Connection, Row};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -286,6 +287,7 @@ fn cleanup_default_employees(connection: &Connection, now: &str) -> Result<(), S
                 "SELECT CASE WHEN
                    EXISTS(SELECT 1 FROM transactions WHERE employee=?1) OR
                    EXISTS(SELECT 1 FROM services WHERE employee=?1) OR
+                   EXISTS(SELECT 1 FROM service_employees WHERE employee=?1) OR
                    EXISTS(SELECT 1 FROM package_purchases WHERE employee=?1) OR
                    EXISTS(SELECT 1 FROM package_consumptions WHERE employee=?1) OR
                    EXISTS(SELECT 1 FROM appointments WHERE employee=?1) OR
@@ -770,7 +772,17 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
     )?;
     connection
         .execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_services_member ON services(member_id);
+            "CREATE TABLE IF NOT EXISTS service_employees (
+               service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+               employee TEXT NOT NULL,
+               commission REAL NOT NULL DEFAULT 0,
+               PRIMARY KEY(service_id,employee)
+             );
+             INSERT OR IGNORE INTO service_employees(service_id,employee,commission)
+               SELECT id,employee,commission FROM services;
+             CREATE INDEX IF NOT EXISTS idx_service_employees_employee
+               ON service_employees(employee,service_id);
+             CREATE INDEX IF NOT EXISTS idx_services_member ON services(member_id);
              CREATE INDEX IF NOT EXISTS idx_services_created ON services(created_at);
              CREATE INDEX IF NOT EXISTS idx_services_employee ON services(employee,created_at);
              CREATE INDEX IF NOT EXISTS idx_package_consumptions_purchase
@@ -1905,15 +1917,17 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
     };
-    let services = {
+    let mut services = {
         let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,service_name,service_type,duration,amount,commission,commission_rule_version,package_purchase_id,project_id,balance_payment_amount,external_payment_amount,payment_method,gift_deduction,principal_deduction,transaction_id,created_at,status FROM services ORDER BY created_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
+                let employee: String = row.get(3)?;
                 Ok(ServiceRecord {
                     id: row.get(0)?,
                     member_id: row.get(1)?,
                     member_name: row.get(2)?,
-                    employee: row.get(3)?,
+                    employee: employee.clone(),
+                    employees: vec![employee],
                     service_name: row.get(4)?,
                     service_type: row.get(5)?,
                     duration: row.get(6)?,
@@ -1936,6 +1950,34 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?
     };
+    let mut service_employees: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT service_id,employee FROM service_employees
+                 ORDER BY service_id,rowid",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?;
+        for row in rows {
+            let (service_id, employee) = row.map_err(|error| error.to_string())?;
+            service_employees
+                .entry(service_id)
+                .or_default()
+                .push(employee);
+        }
+    }
+    for service in &mut services {
+        if let Some(employees) = service_employees.remove(&service.id) {
+            if !employees.is_empty() {
+                service.employees = employees;
+            }
+        }
+    }
     let projects = {
         let mut statement = connection
             .prepare(
@@ -2433,6 +2475,59 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(stock, 18.0);
         assert_eq!(consumption_cost, 20.0);
+    }
+
+    #[test]
+    fn service_assignments_preserve_all_participating_employees() {
+        let mut connection = Connection::open_in_memory().expect("open database");
+        migrate_database(&connection).expect("initialize database");
+        connection
+            .execute_batch(
+                "INSERT INTO employees(id,name,role,commission_rate,status,color,created_at)
+                 VALUES ('e-a','员工甲','美容师',0,'active','#000','2026-01-01'),
+                        ('e-b','员工乙','美容师',0,'active','#000','2026-01-01');
+                 INSERT INTO employee_compensations
+                   (employee_id,base_salary,base_commission_rate,performance_target,
+                    excess_commission_rate,meal_allowance_per_day,attendance_bonus,
+                    normal_service_commission,package_service_commission,created_at)
+                 VALUES ('e-a',1800,0.1,10000,0.02,10,300,5,10,'2026-01-01'),
+                        ('e-b',1800,0.1,10000,0.02,10,300,8,12,'2026-01-01');
+                 INSERT INTO projects
+                   (id,name,duration,price,status,created_at,updated_at)
+                 VALUES ('project','双人护理',60,0,'active','2026-01-01','2026-01-01');",
+            )
+            .expect("prepare service data");
+        let transaction = connection.transaction().expect("start transaction");
+        crate::commands::salon::insert_normal_service(
+            &transaction,
+            "service",
+            None,
+            "游客",
+            &["员工甲".to_string(), "员工乙".to_string()],
+            "project",
+            "",
+            false,
+            "2026-01-02T00:00:00+00:00",
+        )
+        .expect("insert multi-employee service");
+        transaction.commit().expect("commit service");
+
+        let data = snapshot(&connection).expect("load snapshot");
+        assert_eq!(data.services[0].employees, vec!["员工甲", "员工乙"]);
+        let commissions: Vec<f64> = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT commission FROM service_employees
+                     WHERE service_id='service' ORDER BY rowid",
+                )
+                .expect("prepare assignments");
+            statement
+                .query_map([], |row| row.get(0))
+                .expect("query assignments")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect assignments")
+        };
+        assert_eq!(commissions, vec![5.0, 8.0]);
     }
 
     #[test]

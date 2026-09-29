@@ -176,10 +176,17 @@ export function addBrowserService(state: AppSnapshot, input: ServiceInput) {
   const project = state.projects.find(
     item => item.id === input.projectId && item.status === 'active'
   )
-  const employee = state.employees.find(
-    item => item.name === input.employee && item.status === 'active'
+  const employeeNames = [...new Set(input.employees.map(name => name.trim()).filter(Boolean))]
+  const employees = employeeNames.map(name =>
+    state.employees.find(item => item.name === name && item.status === 'active')
   )
-  if ((!member && !input.guestName.trim()) || !employee || !project)
+  const employee = employees[0]
+  if (
+    (!member && !input.guestName.trim()) ||
+    !employee ||
+    employees.some(item => !item) ||
+    !project
+  )
     throw new Error('顾客、员工或项目信息不完整')
   const validExternalMethods = ['微信支付', '支付宝', '现金', '银行卡']
   const balancePaymentAmount = member ? Math.min(member.balance, project.price) : 0
@@ -207,6 +214,7 @@ export function addBrowserService(state: AppSnapshot, input: ServiceInput) {
     memberId: member?.id ?? null,
     memberName: member?.name ?? input.guestName.trim(),
     employee: employee.name,
+    employees: employeeNames,
     serviceName: project.name,
     serviceType: '普通手工',
     duration: project.duration,
