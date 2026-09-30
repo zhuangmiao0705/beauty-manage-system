@@ -256,7 +256,9 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
           serviceHasEmployee(item, employee.name) &&
           isInMonth(item.createdAt, month)
       )
-      const baseSalary = roundMoney((compensation.baseSalary / standardWorkDays) * workDays)
+      const baseSalary = roundMoney(
+        (compensation.baseSalary / standardWorkDays) * Math.min(workDays, standardWorkDays)
+      )
       const rechargePerformance = roundMoney(
         recharges.reduce((sum, item) => sum + item.amount, 0) -
           accountRefunds.reduce((sum, item) => sum + item.cashAmount, 0)
@@ -275,7 +277,7 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
       )
       const mealAllowance = roundMoney(mealDays * compensation.mealAllowancePerDay)
       const attendanceBonus =
-        mealDays >= standardWorkDays ? roundMoney(compensation.attendanceBonus) : 0
+        workDays >= standardWorkDays ? roundMoney(compensation.attendanceBonus) : 0
       return {
         employeeId: employee.id,
         name: employee.name,

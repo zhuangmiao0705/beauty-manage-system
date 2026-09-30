@@ -230,7 +230,7 @@ pub(crate) struct AttendanceRecord {
     pub(crate) id: String,
     pub(crate) employee_id: String,
     pub(crate) month: String,
-    pub(crate) rest_days: i64,
+    pub(crate) rest_days: f64,
     pub(crate) updated_at: String,
 }
 
@@ -358,10 +358,10 @@ pub(crate) struct EmployeeSalary {
     pub(crate) meal_allowance: f64,
     pub(crate) attendance_bonus: f64,
     pub(crate) total_income: f64,
-    pub(crate) rest_days: i64,
+    pub(crate) rest_days: f64,
     pub(crate) active_days: i64,
-    pub(crate) work_days: i64,
-    pub(crate) meal_days: i64,
+    pub(crate) work_days: f64,
+    pub(crate) meal_days: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -472,7 +472,7 @@ pub(crate) struct CommissionConfigInput {
 pub(crate) struct AttendanceInput {
     pub(crate) employee_id: String,
     pub(crate) month: String,
-    pub(crate) rest_days: i64,
+    pub(crate) rest_days: f64,
 }
 
 #[derive(Debug, Deserialize)]

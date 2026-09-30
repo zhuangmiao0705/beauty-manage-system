@@ -11,19 +11,20 @@ use rusqlite::{params, OptionalExtension};
 use uuid::Uuid;
 
 const STANDARD_MONTHLY_REST_DAYS: i64 = 4;
-const DEFAULT_ATTENDANCE_REST_DAYS: i64 = 0;
+const DEFAULT_ATTENDANCE_REST_DAYS: f64 = 4.0;
 
 fn salary_components(
     compensation: &EmployeeCompensation,
     total_performance: f64,
     normal_service_count: i64,
     package_service_count: i64,
-    work_days: i64,
-    meal_days: i64,
+    work_days: f64,
+    meal_days: f64,
     standard_work_days: i64,
 ) -> (f64, f64, f64, f64, f64) {
-    let base_salary =
-        round_money(compensation.base_salary * work_days as f64 / standard_work_days.max(1) as f64);
+    let standard_work_days = standard_work_days.max(1) as f64;
+    let payable_days = work_days.min(standard_work_days);
+    let base_salary = round_money(compensation.base_salary * payable_days / standard_work_days);
     let commission = round_money(
         total_performance * compensation.base_commission_rate
             + (total_performance - compensation.performance_target).max(0.0)
@@ -31,8 +32,8 @@ fn salary_components(
             + normal_service_count as f64 * compensation.normal_service_commission
             + package_service_count as f64 * compensation.package_service_commission,
     );
-    let meal_allowance = round_money(meal_days as f64 * compensation.meal_allowance_per_day);
-    let attendance_bonus = if meal_days >= standard_work_days {
+    let meal_allowance = round_money(meal_days * compensation.meal_allowance_per_day);
+    let attendance_bonus = if work_days >= standard_work_days {
         round_money(compensation.attendance_bonus)
     } else {
         0.0
@@ -45,6 +46,13 @@ fn salary_components(
         attendance_bonus,
         total_income,
     )
+}
+
+fn valid_rest_days(rest_days: f64, days_in_month: i64) -> bool {
+    rest_days.is_finite()
+        && rest_days >= 0.0
+        && rest_days <= days_in_month as f64
+        && ((rest_days * 2.0).round() - rest_days * 2.0).abs() < f64::EPSILON
 }
 
 fn net_recharge_performance(recharge_amount: f64, account_refund_amount: f64) -> f64 {
@@ -144,8 +152,8 @@ pub(crate) fn upsert_attendance(
 ) -> Result<AppSnapshot, String> {
     require_manager(&state, &token)?;
     let (_, _, days_in_month) = month_bounds(&input.month)?;
-    if input.rest_days < 0 || input.rest_days > days_in_month {
-        return Err("休息天数超出该月自然日范围".to_string());
+    if !valid_rest_days(input.rest_days, days_in_month) {
+        return Err("休息天数必须以0.5天为单位，且不能超出该月自然日范围".to_string());
     }
     let connection = state
         .connection
@@ -325,7 +333,7 @@ pub(crate) fn get_employee_salaries(
             .query_row(
                 "SELECT rest_days FROM attendance_records WHERE employee_id=?1 AND month=?2",
                 params![employee_id, month],
-                |row| row.get::<_, i64>(0),
+                |row| row.get::<_, f64>(0),
             )
             .optional()
             .map_err(|error| error.to_string())?;
@@ -334,8 +342,8 @@ pub(crate) fn get_employee_salaries(
             active_days_for_employee(&connection, &employee_id, start, days_in_month)?;
         let elapsed_active_days =
             active_days_for_employee(&connection, &employee_id, start, elapsed_days)?;
-        let work_days = (active_days - rest_days).max(0);
-        let meal_days = (elapsed_active_days - rest_days).max(0);
+        let work_days = (active_days as f64 - rest_days).max(0.0);
+        let meal_days = (elapsed_active_days as f64 - rest_days).max(0.0);
         let total_performance = round_money(recharge_amount + package_purchase_amount);
         let (base_salary, commission, meal_allowance, attendance_bonus, total_income) =
             salary_components(
@@ -371,7 +379,7 @@ pub(crate) fn get_employee_salaries(
 
 #[cfg(test)]
 mod tests {
-    use super::{net_recharge_performance, salary_components};
+    use super::{net_recharge_performance, salary_components, valid_rest_days};
     use crate::models::EmployeeCompensation;
 
     fn compensation() -> EmployeeCompensation {
@@ -392,13 +400,30 @@ mod tests {
     #[test]
     fn salary_uses_performance_service_meal_and_attendance_rules() {
         assert_eq!(
-            salary_components(&compensation(), 13000.0, 2, 1, 27, 27, 27),
+            salary_components(&compensation(), 13000.0, 2, 1, 27.0, 27.0, 27),
             (1800.0, 1380.0, 270.0, 300.0, 3750.0)
         );
         assert_eq!(
-            salary_components(&compensation(), 13000.0, 2, 1, 27, 13, 27),
-            (1800.0, 1380.0, 130.0, 0.0, 3310.0)
+            salary_components(&compensation(), 13000.0, 2, 1, 27.0, 13.0, 27),
+            (1800.0, 1380.0, 130.0, 300.0, 3610.0)
         );
+        assert_eq!(
+            salary_components(&compensation(), 13000.0, 2, 1, 26.5, 26.5, 27),
+            (1766.67, 1380.0, 265.0, 0.0, 3411.67)
+        );
+        assert_eq!(
+            salary_components(&compensation(), 13000.0, 2, 1, 30.0, 30.0, 27),
+            (1800.0, 1380.0, 300.0, 300.0, 3780.0)
+        );
+    }
+
+    #[test]
+    fn attendance_accepts_half_days_only() {
+        assert!(valid_rest_days(0.0, 30));
+        assert!(valid_rest_days(0.5, 30));
+        assert!(valid_rest_days(29.5, 30));
+        assert!(!valid_rest_days(0.25, 30));
+        assert!(!valid_rest_days(30.5, 30));
     }
 
     #[test]

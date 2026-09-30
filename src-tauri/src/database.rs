@@ -576,7 +576,7 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
                employee_id TEXT NOT NULL REFERENCES employees(id),
                employee_name TEXT NOT NULL,
                month TEXT NOT NULL,
-               rest_days INTEGER NOT NULL CHECK(rest_days>=0 AND rest_days<=31),
+               rest_days REAL NOT NULL CHECK(rest_days>=0 AND rest_days<=31),
                created_at TEXT NOT NULL,
                updated_at TEXT NOT NULL,
                UNIQUE(employee_id,month)

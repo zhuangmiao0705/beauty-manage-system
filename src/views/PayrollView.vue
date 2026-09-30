@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import type { FormInstance } from 'element-plus'
+import type { FormInstance, FormItemRule } from 'element-plus'
 import { ClipboardList, ReceiptText, Save, Search } from 'lucide-vue-next'
 import BaseModal from '../components/BaseModal.vue'
 import TablePagination from '../components/TablePagination.vue'
@@ -117,6 +117,27 @@ const {
 
 function employeeColor(employeeId: string) {
   return salonStore.employees.find(employee => employee.id === employeeId)?.color ?? '#d77c8d'
+}
+
+function attendanceRules(maxDays: number): FormItemRule[] {
+  return [
+    {
+      required: true,
+      type: 'number',
+      min: 0,
+      max: maxDays,
+      message: `请输入0至${maxDays}天`,
+      trigger: 'change'
+    },
+    {
+      trigger: ['blur', 'change'],
+      validator: (_rule, value, callback) => {
+        const days = Number(value)
+        if (Number.isFinite(days) && Math.abs(days * 2 - Math.round(days * 2)) < 1e-8) callback()
+        else callback(new Error('休息天数必须以0.5天为单位'))
+      }
+    }
+  ]
 }
 
 function loadAttendanceDrafts() {
@@ -378,16 +399,7 @@ loadAttendanceDrafts()
             <template #default="{ row }">
               <el-form-item
                 :prop="row.id"
-                :rules="[
-                  {
-                    required: true,
-                    type: 'number',
-                    min: 0,
-                    max: row.activeDays,
-                    message: `请输入0至${row.activeDays}天`,
-                    trigger: 'change'
-                  }
-                ]"
+                :rules="attendanceRules(row.activeDays)"
                 class="attendance-form-item"
                 inline-message
               >
@@ -395,7 +407,9 @@ loadAttendanceDrafts()
                   v-model="attendanceDrafts[row.id]"
                   :min="0"
                   :max="row.activeDays"
-                  :precision="0"
+                  :step="0.5"
+                  :precision="1"
+                  step-strictly
                   size="small"
                 />
               </el-form-item>
