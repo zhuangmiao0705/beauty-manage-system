@@ -805,6 +805,118 @@ pub(crate) fn create_employee(
 }
 
 #[tauri::command]
+pub(crate) fn update_employee(
+    token: String,
+    employee_id: String,
+    input: EmployeeInput,
+    state: tauri::State<DatabaseState>,
+) -> Result<AppSnapshot, String> {
+    require_manager(&state, &token)?;
+    if input.name.trim().is_empty()
+        || input.base_salary < 0.0
+        || !(0.0..=1.0).contains(&input.base_commission_rate)
+        || input.performance_target < 0.0
+        || !(0.0..=1.0).contains(&input.excess_commission_rate)
+        || input.meal_allowance_per_day < 0.0
+        || input.attendance_bonus < 0.0
+        || input.normal_service_commission < 0.0
+        || input.package_service_commission < 0.0
+    {
+        return Err("员工信息无效".to_string());
+    }
+    let mut connection = state
+        .connection
+        .lock()
+        .map_err(|_| "数据库锁定失败".to_string())?;
+    let old_name: String = connection
+        .query_row(
+            "SELECT name FROM employees WHERE id=?1",
+            params![employee_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "员工不存在".to_string())?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let name = input.name.trim();
+    transaction
+        .execute(
+            "UPDATE employees SET name=?1,role=?2,color=?3 WHERE id=?4",
+            params![name, input.role, input.color, employee_id],
+        )
+        .map_err(|error| {
+            if error.to_string().contains("UNIQUE") {
+                "员工姓名已存在".to_string()
+            } else {
+                error.to_string()
+            }
+        })?;
+    if old_name != name {
+        for table in [
+            "transactions",
+            "services",
+            "service_employees",
+            "package_purchases",
+            "package_consumptions",
+            "appointments",
+            "refund_records",
+            "product_consumptions",
+        ] {
+            transaction
+                .execute(
+                    &format!("UPDATE {table} SET employee=?1 WHERE employee=?2"),
+                    params![name, old_name],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction
+            .execute(
+                "UPDATE employee_status_events SET employee_name=?1 WHERE employee_id=?2",
+                params![name, employee_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE attendance_records SET employee_name=?1 WHERE employee_id=?2",
+                params![name, employee_id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO employee_compensations
+             (employee_id,base_salary,base_commission_rate,performance_target,
+              excess_commission_rate,meal_allowance_per_day,attendance_bonus,
+              normal_service_commission,package_service_commission,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(employee_id) DO UPDATE SET
+               base_salary=excluded.base_salary,
+               base_commission_rate=excluded.base_commission_rate,
+               performance_target=excluded.performance_target,
+               excess_commission_rate=excluded.excess_commission_rate,
+               meal_allowance_per_day=excluded.meal_allowance_per_day,
+               attendance_bonus=excluded.attendance_bonus,
+               normal_service_commission=excluded.normal_service_commission,
+               package_service_commission=excluded.package_service_commission",
+            params![
+                employee_id,
+                round_money(input.base_salary),
+                input.base_commission_rate,
+                round_money(input.performance_target),
+                input.excess_commission_rate,
+                round_money(input.meal_allowance_per_day),
+                round_money(input.attendance_bonus),
+                round_money(input.normal_service_commission),
+                round_money(input.package_service_commission),
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    transaction.commit().map_err(|error| error.to_string())?;
+    snapshot(&connection)
+}
+
+#[tauri::command]
 pub(crate) fn set_employee_status(
     token: String,
     employee_id: String,

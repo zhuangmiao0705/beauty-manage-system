@@ -367,6 +367,70 @@ export function addBrowserEmployee(state: AppSnapshot, input: EmployeeInput) {
   appendBrowserEmployeeStatusEvent(state, employee.id, 'active')
 }
 
+export function updateBrowserEmployee(
+  state: AppSnapshot,
+  employeeId: string,
+  input: EmployeeInput
+) {
+  const employee = state.employees.find(item => item.id === employeeId)
+  if (!employee) throw new Error('员工不存在')
+  const name = input.name.trim()
+  if (!name) throw new Error('请输入员工姓名')
+  if (state.employees.some(item => item.id !== employeeId && item.name === name))
+    throw new Error('员工姓名已存在')
+
+  const oldName = employee.name
+  Object.assign(employee, {
+    name,
+    role: input.role,
+    color: input.color
+  })
+  if (oldName !== name) {
+    state.transactions.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+    })
+    state.services.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+      if (item.employees?.includes(oldName))
+        item.employees = item.employees.map(value => (value === oldName ? name : value))
+    })
+    state.packagePurchases.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+    })
+    state.packageConsumptions.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+    })
+    state.refundRecords.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+    })
+    state.appointments.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+    })
+    state.productConsumptions.forEach(item => {
+      if (item.employee === oldName) item.employee = name
+    })
+  }
+
+  const compensation = state.employeeCompensations.find(item => item.employeeId === employeeId)
+  const compensationValues = {
+    baseSalary: input.baseSalary,
+    baseCommissionRate: input.baseCommissionRate,
+    performanceTarget: input.performanceTarget,
+    excessCommissionRate: input.excessCommissionRate,
+    mealAllowancePerDay: input.mealAllowancePerDay,
+    attendanceBonus: input.attendanceBonus,
+    normalServiceCommission: input.normalServiceCommission,
+    packageServiceCommission: input.packageServiceCommission
+  }
+  if (compensation) Object.assign(compensation, compensationValues)
+  else
+    state.employeeCompensations.push({
+      employeeId,
+      ...compensationValues,
+      createdAt: new Date().toISOString()
+    })
+}
+
 export function setBrowserEmployeeStatus(
   state: AppSnapshot,
   employeeId: string,

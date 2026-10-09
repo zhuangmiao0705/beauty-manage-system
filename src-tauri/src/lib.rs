@@ -25,7 +25,7 @@ use commands::{
     projects::{create_project, set_project_status, update_project},
     salon::{
         cancel_service, create_employee, create_member, create_service, create_transaction,
-        get_snapshot, refund_member_account, set_employee_status,
+        get_snapshot, refund_member_account, set_employee_status, update_employee,
     },
 };
 use database::initialize_database;
@@ -69,6 +69,7 @@ pub fn run() {
             create_service,
             cancel_service,
             create_employee,
+            update_employee,
             set_employee_status,
             update_commission_config,
             upsert_attendance,

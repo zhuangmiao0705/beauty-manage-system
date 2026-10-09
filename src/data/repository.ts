@@ -37,7 +37,8 @@ import {
   loadBrowserSnapshot,
   refundBrowserMemberAccount,
   saveBrowserSnapshot,
-  setBrowserEmployeeStatus
+  setBrowserEmployeeStatus,
+  updateBrowserEmployee
 } from './browserRepository'
 import {
   addBrowserProductStock,
@@ -214,6 +215,12 @@ export async function deleteSupplyPurchase(purchaseId: string) {
 export async function addEmployee(input: EmployeeInput) {
   if (isTauriRuntime()) setState(await desktopCall<AppSnapshot>('create_employee', { input }))
   else persistBrowserMutation(snapshot => addBrowserEmployee(snapshot, input))
+}
+
+export async function updateEmployee(employeeId: string, input: EmployeeInput) {
+  if (isTauriRuntime())
+    setState(await desktopCall<AppSnapshot>('update_employee', { employeeId, input }))
+  else persistBrowserMutation(snapshot => updateBrowserEmployee(snapshot, employeeId, input))
 }
 
 export async function setEmployeeStatus(employeeId: string, status: 'active' | 'inactive') {

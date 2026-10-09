@@ -6,7 +6,10 @@ import type { Employee } from '../../types'
 import { dateOnly } from '../../utils'
 
 const props = defineProps<{ employees: Employee[] }>()
-const emit = defineEmits<{ toggle: [employee: Employee] }>()
+const emit = defineEmits<{
+  edit: [employee: Employee]
+  toggle: [employee: Employee]
+}>()
 const employeeRecords = computed(() => props.employees)
 const {
   currentPage,
@@ -36,8 +39,9 @@ const {
         </el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="110" fixed="right">
+    <el-table-column label="操作" width="180" fixed="right">
       <template #default="{ row }">
+        <el-button size="small" plain @click="emit('edit', row as Employee)">编辑</el-button>
         <el-button
           size="small"
           :type="row.status === 'active' ? 'danger' : 'success'"

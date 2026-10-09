@@ -7,7 +7,7 @@ import AccountTable from '../components/staff/AccountTable.vue'
 import EmployeeTable from '../components/staff/EmployeeTable.vue'
 import { DEFAULT_EMPLOYEE_COMPENSATION, EMPLOYEE_ROLES } from '../config/options'
 import { createAccount, getAccounts, resetAccountPassword, setAccountStatus } from '../auth'
-import { addEmployee, salonStore, setEmployeeStatus } from '../data/repository'
+import { addEmployee, salonStore, setEmployeeStatus, updateEmployee } from '../data/repository'
 import type { AccountInput, AccountRecord, Employee, EmployeeInput } from '../types'
 import { errorMessage, notify } from '../utils/feedback'
 import { requiredTextRule, validateForm } from '../utils/validation'
@@ -31,6 +31,7 @@ const accountFormRef = ref<FormInstance>()
 const resetFormRef = ref<FormInstance>()
 const accounts = ref<AccountRecord[]>([])
 const selectedAccount = ref<AccountRecord | null>(null)
+const editingEmployee = ref<Employee | null>(null)
 const employeeForm = reactive<EmployeeForm>({
   name: '',
   role: '美容师',
@@ -120,19 +121,32 @@ async function refreshAccounts() {
   }
 }
 
-function openEmployee() {
+function openEmployee(employee?: Employee) {
+  editingEmployee.value = employee ?? null
+  const compensation = employee
+    ? salonStore.employeeCompensations.find(item => item.employeeId === employee.id)
+    : null
   Object.assign(employeeForm, {
-    name: '',
-    role: '美容师',
-    color: '#cc6278',
-    baseSalary: DEFAULT_EMPLOYEE_COMPENSATION.baseSalary,
-    baseCommissionPercent: DEFAULT_EMPLOYEE_COMPENSATION.baseCommissionRate * 100,
-    performanceTarget: DEFAULT_EMPLOYEE_COMPENSATION.performanceTarget,
-    excessCommissionPercent: DEFAULT_EMPLOYEE_COMPENSATION.excessCommissionRate * 100,
-    mealAllowancePerDay: DEFAULT_EMPLOYEE_COMPENSATION.mealAllowancePerDay,
-    attendanceBonus: DEFAULT_EMPLOYEE_COMPENSATION.attendanceBonus,
-    normalServiceCommission: DEFAULT_EMPLOYEE_COMPENSATION.normalServiceCommission,
-    packageServiceCommission: DEFAULT_EMPLOYEE_COMPENSATION.packageServiceCommission
+    name: employee?.name ?? '',
+    role: employee?.role ?? '美容师',
+    color: employee?.color ?? '#cc6278',
+    baseSalary: compensation?.baseSalary ?? DEFAULT_EMPLOYEE_COMPENSATION.baseSalary,
+    baseCommissionPercent:
+      (compensation?.baseCommissionRate ?? DEFAULT_EMPLOYEE_COMPENSATION.baseCommissionRate) * 100,
+    performanceTarget:
+      compensation?.performanceTarget ?? DEFAULT_EMPLOYEE_COMPENSATION.performanceTarget,
+    excessCommissionPercent:
+      (compensation?.excessCommissionRate ?? DEFAULT_EMPLOYEE_COMPENSATION.excessCommissionRate) *
+      100,
+    mealAllowancePerDay:
+      compensation?.mealAllowancePerDay ?? DEFAULT_EMPLOYEE_COMPENSATION.mealAllowancePerDay,
+    attendanceBonus: compensation?.attendanceBonus ?? DEFAULT_EMPLOYEE_COMPENSATION.attendanceBonus,
+    normalServiceCommission:
+      compensation?.normalServiceCommission ??
+      DEFAULT_EMPLOYEE_COMPENSATION.normalServiceCommission,
+    packageServiceCommission:
+      compensation?.packageServiceCommission ??
+      DEFAULT_EMPLOYEE_COMPENSATION.packageServiceCommission
   })
   modal.value = 'employee'
 }
@@ -153,13 +167,15 @@ async function submitEmployee() {
   saving.value = true
   try {
     const { baseCommissionPercent, excessCommissionPercent, ...profile } = employeeForm
-    await addEmployee({
+    const input = {
       ...profile,
       baseCommissionRate: baseCommissionPercent / 100,
       excessCommissionRate: excessCommissionPercent / 100
-    })
+    }
+    if (editingEmployee.value) await updateEmployee(editingEmployee.value.id, input)
+    else await addEmployee(input)
     modal.value = null
-    notify('员工档案创建成功')
+    notify(editingEmployee.value ? '员工档案修改成功' : '员工档案创建成功')
   } catch (reason) {
     notify(errorMessage(reason, '保存失败'), 'error')
   } finally {
@@ -228,7 +244,7 @@ async function submitReset() {
         <el-radio-button value="employees">员工档案</el-radio-button>
         <el-radio-button value="accounts">登录账号</el-radio-button>
       </el-radio-group>
-      <el-button v-if="activeTab === 'employees'" type="primary" @click="openEmployee">
+      <el-button v-if="activeTab === 'employees'" type="primary" @click="openEmployee()">
         <Plus :size="17" />
         新增员工
       </el-button>
@@ -329,6 +345,7 @@ async function submitReset() {
       <EmployeeTable
         v-if="activeTab === 'employees'"
         :employees="filteredEmployees"
+        @edit="openEmployee"
         @toggle="toggleEmployee"
       />
       <AccountTable
@@ -340,8 +357,8 @@ async function submitReset() {
     </section>
     <BaseModal
       v-if="modal === 'employee'"
-      title="新增员工"
-      subtitle="创建员工档案并设置独立薪酬规则"
+      :title="editingEmployee ? '编辑员工' : '新增员工'"
+      :subtitle="editingEmployee ? '修改员工档案及薪酬规则' : '创建员工档案并设置独立薪酬规则'"
       wide
       @close="modal = null"
     >
@@ -435,10 +452,15 @@ async function submitReset() {
       <div class="form-tip">
         绩效总金额 = 会员充值 + 套餐额外支付；会员本金支付部分不计销售员业绩。提成 = 绩效基础提成 +
         超目标提成 + 两类手工次数提成。
+        <template v-if="editingEmployee">
+          修改薪酬字段后，系统重新查看各月份薪酬时会按修改后的规则计算。
+        </template>
       </div>
       <template #footer>
         <el-button @click="modal = null">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submitEmployee">保存员工</el-button>
+        <el-button type="primary" :loading="saving" @click="submitEmployee">
+          {{ editingEmployee ? '保存修改' : '保存员工' }}
+        </el-button>
       </template>
     </BaseModal>
     <BaseModal
