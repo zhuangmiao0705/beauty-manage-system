@@ -342,6 +342,9 @@ td b {
   backdrop-filter: blur(4px);
 }
 .salon-dialog.el-dialog {
+  display: flex;
+  max-height: 90vh;
+  flex-direction: column;
   max-width: calc(100vw - 32px);
   padding: 0;
   overflow: hidden;
@@ -349,6 +352,7 @@ td b {
   box-shadow: 0 24px 70px rgba(40, 24, 29, 0.25);
 }
 .salon-dialog .el-dialog__header {
+  flex-shrink: 0;
   margin: 0;
   padding: 18px 20px 14px;
   border-bottom: 1px solid #eee7e4;
@@ -358,9 +362,13 @@ td b {
   right: 10px;
 }
 .salon-dialog .el-dialog__body {
+  min-height: 0;
   padding: 18px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .salon-dialog .el-dialog__footer {
+  flex-shrink: 0;
   padding: 12px 20px;
   border-top: 1px solid #eee7e4;
   background: #fdfcfc;
