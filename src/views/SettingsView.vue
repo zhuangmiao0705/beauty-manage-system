@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import 'element-plus/es/components/message-box/style/css'
 import {
@@ -20,6 +20,18 @@ import { errorMessage, notify } from '../utils/feedback'
 
 const busy = ref('')
 const updateProgress = ref<number | null>(null)
+const currentVersion = ref(APP_CONFIG.version)
+
+onMounted(async () => {
+  if (!isTauriRuntime()) return
+  try {
+    const { getVersion } = await import('@tauri-apps/api/app')
+    currentVersion.value = await getVersion()
+  } catch {
+    // 保留构建时版本号，版本读取失败不影响系统设置的其他功能。
+  }
+})
+
 async function backup() {
   busy.value = 'backup'
   try {
@@ -83,7 +95,7 @@ async function checkUpdate() {
     await createBackup()
     let downloaded = 0
     let contentLength = 0
-    await update.downloadAndInstall((event) => {
+    await update.downloadAndInstall(event => {
       if (event.event === 'Started') {
         contentLength = event.data.contentLength ?? 0
         updateProgress.value = contentLength > 0 ? 0 : null
@@ -211,7 +223,7 @@ async function checkUpdate() {
         <dl>
           <div>
             <dt>当前版本</dt>
-            <dd>{{ APP_CONFIG.version }}</dd>
+            <dd>{{ currentVersion }}</dd>
           </div>
           <div>
             <dt>更新通道</dt>
@@ -239,7 +251,7 @@ async function checkUpdate() {
         <h3>聚尚木子门店管理系统</h3>
         <p>Vue 3 + Tauri 2 + SQLite · 本地离线运行 · 数据由门店自行掌控</p>
       </div>
-      <span>Version {{ APP_CONFIG.version }}</span>
+      <span>Version {{ currentVersion }}</span>
     </section>
   </div>
 </template>
