@@ -16,6 +16,13 @@ use rusqlite::params;
 use uuid::Uuid;
 
 fn validate_package(input: &PackageDefinitionInput) -> Result<(), String> {
+    crate::commission::validate(&input.commission_mode, input.commission_rate)?;
+    if input.validity_days < 0
+        || input.gift_uses < 0
+        || (input.gift_package_id.is_some() && input.gift_uses <= 0)
+    {
+        return Err("有效期或赠送次数无效".into());
+    }
     if input.name.trim().is_empty()
         || !input.price.is_finite()
         || input.price < 0.0
@@ -146,22 +153,27 @@ pub(crate) fn create_package(
     } else {
         0.0
     };
+    if let Some(ref gift_id) = input.gift_package_id {
+        connection
+            .query_row(
+                "SELECT id FROM packages WHERE id=?1 AND status='active'",
+                params![gift_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| "请选择启用状态的赠送套餐".to_string())?;
+    }
     let total_uses = if input.limit_type == "count" {
         input.total_uses
     } else {
         1
     };
-    let validity_days = if input.limit_type == "time" {
-        input.validity_days
-    } else {
-        0
-    };
+    let validity_days = input.validity_days;
     connection
         .execute(
             "INSERT INTO packages
              (id,name,price,total_uses,limit_type,validity_days,package_type,product_id,
-              consumption_quantity,status,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?10)",
+              consumption_quantity,status,created_at,updated_at,commission_mode,commission_rate,gift_package_id,gift_uses)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'active',?10,?10,?11,?12,?13,?14)",
             params![
                 Uuid::new_v4().to_string(),
                 input.name.trim(),
@@ -172,7 +184,11 @@ pub(crate) fn create_package(
                 input.package_type,
                 product_id,
                 consumption_quantity,
-                now
+                now,
+                input.commission_mode,
+                input.commission_rate,
+                input.gift_package_id,
+                input.gift_uses
             ],
         )
         .map_err(|error| {
@@ -198,16 +214,24 @@ pub(crate) fn update_package(
         .connection
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
+    if let Some(ref gift_id) = input.gift_package_id {
+        connection
+            .query_row(
+                "SELECT id FROM packages WHERE id=?1 AND status='active'",
+                params![gift_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| "请选择启用状态的赠送套餐".to_string())?;
+        if gift_id == &package_id {
+            return Err("套餐不能赠送自身".into());
+        }
+    }
     let total_uses = if input.limit_type == "count" {
         input.total_uses
     } else {
         1
     };
-    let validity_days = if input.limit_type == "time" {
-        input.validity_days
-    } else {
-        0
-    };
+    let validity_days = input.validity_days;
     let product_id = input
         .product_id
         .as_deref()
@@ -234,7 +258,7 @@ pub(crate) fn update_package(
         .execute(
             "UPDATE packages SET name=?1,price=?2,total_uses=?3,limit_type=?4,
              validity_days=?5,package_type=?6,product_id=?7,consumption_quantity=?8,
-             updated_at=?9 WHERE id=?10",
+             updated_at=?9,commission_mode=?11,commission_rate=?12,gift_package_id=?13,gift_uses=?14 WHERE id=?10",
             params![
                 input.name.trim(),
                 round_money(input.price),
@@ -245,7 +269,11 @@ pub(crate) fn update_package(
                 product_id,
                 consumption_quantity,
                 Utc::now().to_rfc3339(),
-                package_id
+                package_id,
+                input.commission_mode,
+                input.commission_rate,
+                input.gift_package_id,
+                input.gift_uses
             ],
         )
         .map_err(|error| {
@@ -259,6 +287,7 @@ pub(crate) fn update_package(
         return Err("套餐不存在".to_string());
     }
     backfill_product_consumptions_for_source(&transaction, "package", &package_id)?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &manager)
 }
@@ -301,6 +330,14 @@ pub(crate) fn purchase_package(
         .connection
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
+    record_package_purchase(&mut connection, &input)?;
+    snapshot_for_user(&connection, &operator)
+}
+
+pub(crate) fn record_package_purchase(
+    connection: &mut rusqlite::Connection,
+    input: &PackagePurchaseInput,
+) -> Result<(), String> {
     let employee = validate_active_employee(&connection, &input.employee)?;
     let compensation = employee_compensation_for_name(&connection, &employee)?;
     let transaction = connection
@@ -355,7 +392,7 @@ pub(crate) fn purchase_package(
     if activated_at > now_value {
         return Err("开卡时间不能晚于当前时间".to_string());
     }
-    let expires_at = if limit_type == "time" {
+    let expires_at = if validity_days > 0 {
         Some((activated_at + Duration::days(validity_days)).to_rfc3339())
     } else {
         None
@@ -445,8 +482,33 @@ pub(crate) fn purchase_package(
             )
             .map_err(|error| error.to_string())?;
     }
+    transaction.execute("UPDATE package_purchases SET commission_mode=(SELECT commission_mode FROM packages WHERE id=?2),
+        commission_rate=(SELECT commission_rate FROM packages WHERE id=?2) WHERE id=?1",
+        params![purchase_id,input.package_id]).map_err(|error| error.to_string())?;
+    let gift: (Option<String>, i64) = transaction
+        .query_row(
+            "SELECT gift_package_id,gift_uses FROM packages WHERE id=?1",
+            params![input.package_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(gift_id) = gift.0 {
+        let changed = transaction.execute("INSERT INTO package_purchases
+            (id,member_id,member_name,employee,package_id,package_name,package_type,price,total_uses,remaining_uses,
+             limit_type,validity_days,activated_at,expires_at,payment_method,balance_payment_amount,cash_payment_amount,
+             status,purchased_at,commission,commission_rule_version,transaction_id,note,commission_mode,commission_rate,parent_purchase_id)
+            SELECT ?1,p.member_id,p.member_name,p.employee,g.id,g.name||'（赠送）',g.package_type,0,?2,?2,
+             'count',p.validity_days,p.activated_at,p.expires_at,'现金',0,0,p.status,p.purchased_at,0,3,'',
+             '随'||p.package_name||'赠送','independent',0,p.id
+            FROM package_purchases p JOIN packages g ON g.id=?3 AND g.status='active' WHERE p.id=?4",
+            params![Uuid::new_v4().to_string(),gift.1,gift_id,purchase_id]).map_err(|error| error.to_string())?;
+        if changed != 1 {
+            return Err("赠送套餐已停用，请调整套餐配置".into());
+        }
+    }
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
-    snapshot_for_user(&connection, &operator)
+    Ok(())
 }
 
 #[tauri::command]
@@ -460,6 +522,15 @@ pub(crate) fn refund_package(
         .connection
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
+    record_package_refund(&mut connection, &input, &manager.display_name)?;
+    snapshot_for_user(&connection, &manager)
+}
+
+pub(crate) fn record_package_refund(
+    connection: &mut rusqlite::Connection,
+    input: &PackageRefundInput,
+    operator: &str,
+) -> Result<(), String> {
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
@@ -523,7 +594,28 @@ pub(crate) fn refund_package(
     if refunded_at.is_some() {
         return Err("该套餐已经退款，请勿重复操作".to_string());
     }
-    if limit_type == "time" && !time_package_is_active(expires_at.as_deref(), Utc::now()) {
+    let parent: Option<String> = transaction
+        .query_row(
+            "SELECT parent_purchase_id FROM package_purchases WHERE id=?1",
+            params![input.purchase_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if parent.is_some() {
+        return Err("赠送权益请随原购买套餐一并处理".into());
+    }
+    let pending_gifts: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM appointments WHERE status IN ('pending','arrived','in_service')
+        AND package_purchase_id IN (SELECT id FROM package_purchases WHERE parent_purchase_id=?1)",
+            params![input.purchase_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if pending_gifts > 0 {
+        return Err("关联赠送套餐存在未完成预约，请先处理预约".into());
+    }
+    if expires_at.is_some() && !time_package_is_active(expires_at.as_deref(), Utc::now()) {
         return Err("该时间套餐已经到期，不能发起退款".to_string());
     }
     let active_appointments: i64 = transaction
@@ -629,7 +721,7 @@ pub(crate) fn refund_package(
                 refund_cash_amount,
                 refund_commission,
                 employee,
-                manager.display_name,
+                operator,
                 balance_after,
                 now,
                 if input.note.trim().is_empty() {
@@ -640,8 +732,16 @@ pub(crate) fn refund_package(
             ],
         )
         .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "UPDATE package_purchases SET status='completed',refunded_at=?1,remaining_uses=0
+        WHERE parent_purchase_id=?2",
+            params![now, input.purchase_id],
+        )
+        .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
-    snapshot_for_user(&connection, &manager)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -778,7 +878,8 @@ pub(crate) fn consume_package(
         .map_err(|_| "套餐不存在或已结束".to_string())?;
     let now_value = Utc::now();
     if (limit_type == "count" && remaining_uses <= 0)
-        || (limit_type == "time" && !time_package_is_active(expires_at.as_deref(), now_value))
+        || ((limit_type == "time" || expires_at.is_some())
+            && !time_package_is_active(expires_at.as_deref(), now_value))
     {
         return Err("套餐已过期或没有剩余次数".to_string());
     }
@@ -857,6 +958,18 @@ pub(crate) fn consume_package(
             params![now, member_id],
         )
         .map_err(|error| error.to_string())?;
+    transaction.execute("UPDATE services SET commission_mode=(SELECT commission_mode FROM package_purchases WHERE id=?2),
+        commission_rate=(SELECT commission_rate FROM package_purchases WHERE id=?2),
+        commission=CASE WHEN (SELECT commission_mode FROM package_purchases WHERE id=?2)='independent' THEN 0 ELSE commission END WHERE id=?1",
+        params![service_id,input.purchase_id]).map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "UPDATE package_consumptions SET commission=0 WHERE service_id=?1
+        AND EXISTS(SELECT 1 FROM services WHERE id=?1 AND commission_mode='independent')",
+            params![service_id],
+        )
+        .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &operator)
 }

@@ -40,6 +40,13 @@ fn package_is_available(
     expires_at: Option<&str>,
     at: DateTime<Utc>,
 ) -> bool {
+    if expires_at.is_some_and(|value| {
+        DateTime::parse_from_rfc3339(value)
+            .map(|date| date.with_timezone(&Utc) <= at)
+            .unwrap_or(true)
+    }) {
+        return false;
+    }
     if limit_type == "time" {
         return expires_at
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
@@ -432,6 +439,20 @@ pub(crate) fn complete_appointment(
     if changed != 1 {
         return Err("预约状态已变化，请刷新后重试".to_string());
     }
+    if let Some(ref purchase_id) = appointment.5 {
+        transaction.execute("UPDATE services SET commission_mode=(SELECT commission_mode FROM package_purchases WHERE id=?2),
+            commission_rate=(SELECT commission_rate FROM package_purchases WHERE id=?2),
+            commission=CASE WHEN (SELECT commission_mode FROM package_purchases WHERE id=?2)='independent' THEN 0 ELSE commission END WHERE id=?1",
+            params![service_id,purchase_id]).map_err(|error| error.to_string())?;
+    }
+    transaction
+        .execute(
+            "UPDATE package_consumptions SET commission=0 WHERE service_id=?1
+        AND EXISTS(SELECT 1 FROM services WHERE id=?1 AND commission_mode='independent')",
+            params![service_id],
+        )
+        .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &operator)
 }

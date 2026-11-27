@@ -153,6 +153,10 @@ pub(crate) fn insert_normal_service(
                 error.to_string()
             }
         })?;
+    transaction.execute("UPDATE services SET commission_mode=(SELECT commission_mode FROM projects WHERE id=?2),
+        commission_rate=(SELECT commission_rate FROM projects WHERE id=?2),
+        commission=CASE WHEN (SELECT commission_mode FROM projects WHERE id=?2)='independent' THEN 0 ELSE commission END WHERE id=?1",
+        params![service_id,project_id]).map_err(|error| error.to_string())?;
     for assigned_employee in employees {
         let assigned_compensation = employee_compensation_for_name(transaction, assigned_employee)?;
         transaction
@@ -272,6 +276,7 @@ pub(crate) fn create_member(
             )
             .map_err(|error| error.to_string())?;
     }
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &operator)
 }
@@ -349,6 +354,7 @@ pub(crate) fn create_transaction(
             ],
         )
         .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &operator)
 }
@@ -482,6 +488,7 @@ pub(crate) fn refund_member_account(
             ],
         )
         .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &manager)
 }
@@ -530,6 +537,7 @@ pub(crate) fn create_service(
         false,
         &now,
     )?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &operator)
 }
@@ -637,7 +645,18 @@ pub(crate) fn cancel_service(
             )
             .map_err(|error| error.to_string())?;
         let (restored_uses, package_status) = if limit_type == "count" {
-            ((remaining_uses + 1).min(total_uses), "active")
+            (
+                (remaining_uses + 1).min(total_uses),
+                if expires_at
+                    .as_deref()
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    .is_some_and(|value| value.with_timezone(&Utc) <= Utc::now())
+                {
+                    "completed"
+                } else {
+                    "active"
+                },
+            )
         } else {
             let is_active = expires_at
                 .as_deref()
@@ -727,6 +746,7 @@ pub(crate) fn cancel_service(
             params![now, service_id],
         )
         .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot_for_user(&connection, &manager)
 }
@@ -800,6 +820,7 @@ pub(crate) fn create_employee(
             ],
         )
         .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot(&connection)
 }
@@ -912,6 +933,7 @@ pub(crate) fn update_employee(
             ],
         )
         .map_err(|error| error.to_string())?;
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     snapshot(&connection)
 }
@@ -985,6 +1007,7 @@ pub(crate) fn set_employee_status(
             )
             .map_err(|error| error.to_string())?;
     }
+    crate::commission::sync(&transaction, false)?;
     transaction.commit().map_err(|error| error.to_string())?;
     let data = snapshot(&connection)?;
     drop(connection);

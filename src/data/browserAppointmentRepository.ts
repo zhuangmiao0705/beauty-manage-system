@@ -181,7 +181,8 @@ export function completeBrowserAppointment(
     purchase.remainingUses = remainingAfter
     purchase.lastConsumedAt = now
     if (purchase.limitType === 'count' && remainingAfter === 0) purchase.status = 'completed'
-    const commission = compensation?.packageServiceCommission ?? 10
+    const commission =
+      purchase.commissionMode === 'independent' ? 0 : (compensation?.packageServiceCommission ?? 10)
     snapshot.services.unshift({
       id: serviceId,
       memberId: appointment.memberId,
@@ -189,6 +190,8 @@ export function completeBrowserAppointment(
       employee: appointment.employee,
       serviceName: purchase.packageName,
       serviceType: '套盒手工',
+      commissionMode: purchase.commissionMode ?? 'general',
+      commissionRate: purchase.commissionRate ?? 0,
       duration: input.duration,
       amount: 0,
       commission,
@@ -245,6 +248,8 @@ export function completeBrowserAppointment(
       employee: appointment.employee,
       serviceName: project.name,
       serviceType: '普通手工',
+      commissionMode: project.commissionMode,
+      commissionRate: project.commissionRate,
       duration: project.duration,
       amount: project.price,
       commission: compensation?.normalServiceCommission ?? 5,

@@ -61,6 +61,7 @@ import {
 } from './browserBusinessRepository'
 
 const emptySnapshot = (): AppSnapshot => ({
+  commissionEntries: [],
   members: [],
   transactions: [],
   services: [],
@@ -85,6 +86,11 @@ let initialized = false
 let authToken = ''
 
 function setState(snapshot: AppSnapshot) {
+  state.commissionEntries.splice(
+    0,
+    state.commissionEntries.length,
+    ...(snapshot.commissionEntries ?? [])
+  )
   state.members.splice(0, state.members.length, ...snapshot.members)
   state.transactions.splice(0, state.transactions.length, ...snapshot.transactions)
   state.services.splice(0, state.services.length, ...snapshot.services)
@@ -124,9 +130,11 @@ const desktopCall = <T>(command: string, args?: Record<string, unknown>) =>
   invokeCommand<T>(command, { token: authToken, ...args })
 
 function persistBrowserMutation(mutation: (snapshot: AppSnapshot) => void) {
-  mutation(state)
-  normalizeBusinessSnapshot(state)
-  saveBrowserSnapshot(state)
+  const draft: AppSnapshot = JSON.parse(JSON.stringify(state))
+  mutation(draft)
+  normalizeBusinessSnapshot(draft)
+  saveBrowserSnapshot(draft)
+  setState(draft)
 }
 
 export function setRepositoryToken(token: string) {

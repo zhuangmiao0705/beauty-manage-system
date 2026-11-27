@@ -1,4 +1,39 @@
 export type EntityStatus = 'active' | 'inactive'
+export type CommissionMode = 'general' | 'independent'
+export interface CommissionSettings {
+  commissionMode: CommissionMode
+  commissionRate: number
+}
+
+export interface PrincipalAllocation {
+  rechargeId: string
+  amount: number
+  commission: number
+  verified: boolean
+}
+
+export interface CommissionEntry {
+  id: string
+  sourceType: 'recharge' | 'package' | 'service' | 'refund' | 'cancel' | 'legacy'
+  sourceId: string
+  memberId: string | null
+  memberName: string
+  businessName: string
+  mode: CommissionMode
+  rate: number
+  amount: number
+  balanceAmount: number
+  cashAmount: number
+  performanceAmount: number
+  rechargeOffset: number
+  balanceCommission: number
+  cashCommission: number
+  commission: number
+  principalAllocations: PrincipalAllocation[]
+  employees: Array<{ employeeId: string; commission: number }>
+  createdAt: string
+  legacy: boolean
+}
 export type TransactionType = 'recharge' | 'consume'
 export type ServiceType = '套盒手工' | '普通手工'
 export type PackageType = '套盒' | '普通'
@@ -65,9 +100,12 @@ export interface ServiceRecord {
   transactionId?: string | null
   createdAt: string
   status: 'completed' | 'cancelled'
+  cancelledAt?: string | null
+  commissionMode?: CommissionMode
+  commissionRate?: number
 }
 
-export interface ProjectDefinition {
+export interface ProjectDefinition extends CommissionSettings {
   id: string
   name: string
   duration: number
@@ -164,7 +202,7 @@ export interface AttendanceRecord {
   updatedAt: string
 }
 
-export interface PackageDefinition {
+export interface PackageDefinition extends CommissionSettings {
   id: string
   name: string
   price: number
@@ -174,6 +212,8 @@ export interface PackageDefinition {
   packageType: PackageType
   productId: string | null
   consumptionQuantity: number
+  giftPackageId: string | null
+  giftUses: number
   status: EntityStatus
   createdAt: string
   updatedAt: string
@@ -209,6 +249,9 @@ export interface PackagePurchase {
   refundBalanceAmount: number
   refundCashAmount: number
   note: string
+  commissionMode?: CommissionMode
+  commissionRate?: number
+  parentPurchaseId?: string | null
 }
 
 export interface PackageConsumption {
@@ -279,12 +322,15 @@ export interface EmployeeSalaryRow {
   mealDays: number
   baseSalary: number
   commission: number
+  generalCommission: number
+  independentCommission: number
   mealAllowance: number
   attendanceBonus: number
   totalIncome: number
 }
 
 export interface AppSnapshot {
+  commissionEntries: CommissionEntry[]
   members: Member[]
   transactions: TransactionRecord[]
   services: ServiceRecord[]
@@ -332,7 +378,7 @@ export interface ServiceInput {
   externalPaymentMethod: ExternalPaymentMethod | ''
 }
 
-export interface ProjectDefinitionInput {
+export interface ProjectDefinitionInput extends CommissionSettings {
   name: string
   duration: number
   price: number
@@ -374,7 +420,7 @@ export interface AttendanceInput {
   restDays: number
 }
 
-export interface PackageDefinitionInput {
+export interface PackageDefinitionInput extends CommissionSettings {
   name: string
   price: number
   totalUses: number
@@ -383,6 +429,8 @@ export interface PackageDefinitionInput {
   packageType: PackageType
   productId: string | null
   consumptionQuantity: number
+  giftPackageId: string | null
+  giftUses: number
 }
 
 export interface PackageRefundInput {

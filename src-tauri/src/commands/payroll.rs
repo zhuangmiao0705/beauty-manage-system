@@ -244,6 +244,7 @@ pub(crate) fn get_employee_salaries(
         .connection
         .lock()
         .map_err(|_| "数据库锁定失败".to_string())?;
+    let commission_snapshot = snapshot(&connection)?;
     let start_text = start.to_rfc3339();
     let end_text = end.to_rfc3339();
     let mut employee_statement = connection
@@ -290,7 +291,7 @@ pub(crate) fn get_employee_salaries(
         let package_purchase_amount: f64 = connection
             .query_row(
                 "SELECT COALESCE(SUM(cash_payment_amount),0) FROM package_purchases
-                 WHERE employee=?1 AND purchased_at>=?2 AND purchased_at<?3",
+                 WHERE employee=?1 AND commission_mode='general' AND purchased_at>=?2 AND purchased_at<?3",
                 params![name, start_text, end_text],
                 |row| row.get(0),
             )
@@ -299,6 +300,7 @@ pub(crate) fn get_employee_salaries(
             .query_row(
                 "SELECT COALESCE(SUM(cash_amount),0) FROM refund_records
                  WHERE refund_type='package' AND employee=?1
+                   AND package_purchase_id IN (SELECT id FROM package_purchases WHERE commission_mode='general')
                    AND created_at>=?2 AND created_at<?3",
                 params![name, start_text, end_text],
                 |row| row.get(0),
@@ -311,7 +313,7 @@ pub(crate) fn get_employee_salaries(
                  WHERE (s.employee=?1 OR EXISTS(
                    SELECT 1 FROM service_employees se
                    WHERE se.service_id=s.id AND se.employee=?1
-                 )) AND s.service_type='普通手工' AND s.status='completed'
+                 )) AND s.commission_mode='general' AND s.service_type='普通手工' AND s.status='completed'
                    AND created_at>=?2 AND created_at<?3",
                 params![name, start_text, end_text],
                 |row| row.get(0),
@@ -323,7 +325,7 @@ pub(crate) fn get_employee_salaries(
                  WHERE (s.employee=?1 OR EXISTS(
                    SELECT 1 FROM service_employees se
                    WHERE se.service_id=s.id AND se.employee=?1
-                 )) AND s.service_type='套盒手工' AND s.status='completed'
+                 )) AND s.commission_mode='general' AND s.service_type='套盒手工' AND s.status='completed'
                    AND created_at>=?2 AND created_at<?3",
                 params![name, start_text, end_text],
                 |row| row.get(0),
@@ -345,16 +347,46 @@ pub(crate) fn get_employee_salaries(
         let work_days = (active_days as f64 - rest_days).max(0.0);
         let meal_days = (elapsed_active_days as f64 - rest_days).max(0.0);
         let total_performance = round_money(recharge_amount + package_purchase_amount);
-        let (base_salary, commission, meal_allowance, attendance_bonus, total_income) =
-            salary_components(
-                &compensation,
-                total_performance,
-                normal_service_count,
-                package_service_count,
-                work_days,
-                meal_days,
-                standard_work_days,
-            );
+        let (base_salary, _, meal_allowance, attendance_bonus, _) = salary_components(
+            &compensation,
+            total_performance,
+            normal_service_count,
+            package_service_count,
+            work_days,
+            meal_days,
+            standard_work_days,
+        );
+        let mut general_commission = normal_service_count as f64
+            * compensation.normal_service_commission
+            + package_service_count as f64 * compensation.package_service_commission;
+        let mut independent_commission = 0.0;
+        for entry in &commission_snapshot.commission_entries {
+            let in_month = DateTime::parse_from_rfc3339(&entry.created_at)
+                .map(|value| {
+                    let occurred_at = value.with_timezone(&Utc);
+                    occurred_at >= start && occurred_at < end
+                })
+                .unwrap_or_else(|_| entry.created_at.starts_with(&month));
+            if !in_month {
+                continue;
+            }
+            let share = entry
+                .employees
+                .iter()
+                .find(|item| item.employee_id == employee_id)
+                .map(|item| item.commission)
+                .unwrap_or(0.0);
+            if entry.mode == "independent" {
+                independent_commission += share;
+            } else {
+                general_commission += share;
+            }
+        }
+        let general_commission = round_money(general_commission);
+        let independent_commission = round_money(independent_commission);
+        let commission = round_money(general_commission + independent_commission);
+        let total_income =
+            round_money(base_salary + commission + meal_allowance + attendance_bonus);
         salaries.push(EmployeeSalary {
             employee_id,
             name,
@@ -364,6 +396,8 @@ pub(crate) fn get_employee_salaries(
             package_service_count,
             normal_service_count,
             commission,
+            general_commission,
+            independent_commission,
             base_salary,
             meal_allowance,
             attendance_bonus,

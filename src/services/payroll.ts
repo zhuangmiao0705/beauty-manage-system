@@ -1,3 +1,4 @@
+import { independentCommissionForEmployee } from './commission'
 import {
   DEFAULT_ATTENDANCE_REST_DAYS,
   DEFAULT_EMPLOYEE_COMPENSATION,
@@ -59,6 +60,7 @@ export function buildHandworkDetails(
     .filter(
       item =>
         item.status === 'completed' &&
+        item.commissionMode !== 'independent' &&
         serviceHasEmployee(item, employee.name) &&
         isInMonth(item.createdAt, month)
     )
@@ -106,7 +108,12 @@ export function buildPerformanceDetails(
       createdAt: item.createdAt
     }))
   const packageDetails: PerformanceDetailRow[] = snapshot.packagePurchases
-    .filter(item => item.employee === employee.name && isInMonth(item.purchasedAt, month))
+    .filter(
+      item =>
+        item.employee === employee.name &&
+        item.commissionMode !== 'independent' &&
+        isInMonth(item.purchasedAt, month)
+    )
     .map(item => ({
       id: `package-${item.id}`,
       memberName: item.memberName,
@@ -145,6 +152,8 @@ export function buildPerformanceDetails(
       item =>
         item.refundType === 'package' &&
         item.employee === employee.name &&
+        snapshot.packagePurchases.find(purchase => purchase.id === item.packagePurchaseId)
+          ?.commissionMode !== 'independent' &&
         isInMonth(item.createdAt, month)
     )
     .map(item => {
@@ -234,17 +243,23 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
           isInMonth(item.createdAt, month)
       )
       const purchases = snapshot.packagePurchases.filter(
-        item => item.employee === employee.name && isInMonth(item.purchasedAt, month)
+        item =>
+          item.employee === employee.name &&
+          item.commissionMode !== 'independent' &&
+          isInMonth(item.purchasedAt, month)
       )
       const packageRefunds = snapshot.refundRecords.filter(
         item =>
           item.refundType === 'package' &&
           item.employee === employee.name &&
+          snapshot.packagePurchases.find(purchase => purchase.id === item.packagePurchaseId)
+            ?.commissionMode !== 'independent' &&
           isInMonth(item.createdAt, month)
       )
       const packageServices = snapshot.services.filter(
         item =>
           item.status === 'completed' &&
+          item.commissionMode !== 'independent' &&
           item.serviceType === '套盒手工' &&
           serviceHasEmployee(item, employee.name) &&
           isInMonth(item.createdAt, month)
@@ -252,6 +267,7 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
       const normalServices = snapshot.services.filter(
         item =>
           item.status === 'completed' &&
+          item.commissionMode !== 'independent' &&
           item.serviceType === '普通手工' &&
           serviceHasEmployee(item, employee.name) &&
           isInMonth(item.createdAt, month)
@@ -268,13 +284,22 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
           packageRefunds.reduce((sum, item) => sum + item.cashAmount, 0)
       )
       const totalPerformance = roundMoney(rechargePerformance + packagePurchasePerformance)
-      const commission = roundMoney(
-        totalPerformance * compensation.baseCommissionRate +
-          Math.max(0, totalPerformance - compensation.performanceTarget) *
-            compensation.excessCommissionRate +
+      const salesEntries = (snapshot.commissionEntries ?? []).filter(item =>
+        isInMonth(item.createdAt, month)
+      )
+      const generalCommission = roundMoney(
+        salesEntries
+          .filter(item => item.mode === 'general')
+          .reduce((sum, item) => sum + independentCommissionForEmployee(item, employee.id), 0) +
           packageServices.length * compensation.packageServiceCommission +
           normalServices.length * compensation.normalServiceCommission
       )
+      const independentCommission = roundMoney(
+        salesEntries
+          .filter(item => item.mode === 'independent')
+          .reduce((sum, item) => sum + independentCommissionForEmployee(item, employee.id), 0)
+      )
+      const commission = roundMoney(generalCommission + independentCommission)
       const mealAllowance = roundMoney(mealDays * compensation.mealAllowancePerDay)
       const attendanceBonus =
         workDays >= standardWorkDays ? roundMoney(compensation.attendanceBonus) : 0
@@ -292,10 +317,12 @@ export function buildSalaryRows(snapshot: AppSnapshot, month: string): EmployeeS
         mealDays,
         baseSalary,
         commission,
+        generalCommission,
+        independentCommission,
         mealAllowance,
         attendanceBonus,
         totalIncome: roundMoney(baseSalary + commission + mealAllowance + attendanceBonus)
       }
     })
-    .filter(item => item.activeDays > 0 || item.totalPerformance !== 0)
+    .filter(item => item.activeDays > 0 || item.totalPerformance !== 0 || item.commission !== 0)
 }

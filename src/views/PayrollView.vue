@@ -13,8 +13,9 @@ import {
   buildSalaryRows,
   employeeActiveDays
 } from '../services/payroll'
+import { independentCommissionForEmployee } from '../services/commission'
 import type { AppSnapshot, Employee, EmployeeSalaryRow } from '../types'
-import { currency, fullDateTime, localMonthKey } from '../utils'
+import { currency, fullDateTime, isInMonth, localMonthKey } from '../utils'
 import { errorMessage, notify } from '../utils/feedback'
 
 type SalaryFilters = {
@@ -39,7 +40,7 @@ const appliedAttendanceFilters = reactive<SalaryFilters>({ ...attendanceFilterFo
 const attendanceDrafts = reactive<Record<string, number>>({})
 const savingAttendance = ref('')
 const attendanceFormRef = ref<FormInstance>()
-const detailModal = ref<'handwork' | 'performance' | null>(null)
+const detailModal = ref<'handwork' | 'performance' | 'commission' | null>(null)
 const selectedSalaryRow = ref<EmployeeSalaryRow | null>(null)
 const snapshot = salonStore as unknown as AppSnapshot
 
@@ -89,6 +90,27 @@ const performanceDetails = computed(() =>
         selectedSalaryRow.value.employeeId,
         appliedSalaryFilters.month
       )
+    : []
+)
+const commissionDetails = computed(() =>
+  selectedSalaryRow.value
+    ? salonStore.commissionEntries
+        .filter(
+          item =>
+            isInMonth(item.createdAt, appliedSalaryFilters.month) &&
+            item.mode === 'independent' &&
+            item.employees.some(
+              employee => employee.employeeId === selectedSalaryRow.value?.employeeId
+            )
+        )
+        .map(item => ({
+          ...item,
+          employeeCommission: independentCommissionForEmployee(
+            item,
+            selectedSalaryRow.value!.employeeId
+          )
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     : []
 )
 const handworkCommission = computed(() =>
@@ -176,7 +198,7 @@ function resetAttendance() {
   queryAttendance()
 }
 
-function openSalaryDetail(row: EmployeeSalaryRow, type: 'handwork' | 'performance') {
+function openSalaryDetail(row: EmployeeSalaryRow, type: 'handwork' | 'performance' | 'commission') {
   selectedSalaryRow.value = row
   detailModal.value = type
 }
@@ -291,7 +313,21 @@ loadAttendanceDrafts()
         <el-table-column label="底薪" min-width="105">
           <template #default="{ row }">{{ currency(row.baseSalary, 2) }}</template>
         </el-table-column>
-        <el-table-column label="提成" min-width="105">
+        <el-table-column label="通用提成（含手工）" min-width="150">
+          <template #default="{ row }">{{ currency(row.generalCommission, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="独立项目提成" min-width="140">
+          <template #default="{ row }">
+            <el-button
+              link
+              type="primary"
+              @click="openSalaryDetail(row as EmployeeSalaryRow, 'commission')"
+            >
+              {{ currency(row.independentCommission, 2) }}
+            </el-button>
+          </template>
+        </el-table-column>
+        <el-table-column label="提成合计" min-width="105">
           <template #default="{ row }">
             <strong class="money">{{ currency(row.commission, 2) }}</strong>
           </template>
@@ -564,6 +600,48 @@ loadAttendanceDrafts()
         v-model:page-size="performancePageSize"
         :total="performanceDetails.length"
       />
+    </BaseModal>
+    <BaseModal
+      v-if="detailModal === 'commission' && selectedSalaryRow"
+      title="独立项目提成明细"
+      subtitle="余额部分补差额，额外付款按比例计提；退款与撤销以负数冲回。多人服务均分本笔提成。"
+      wide
+      @close="detailModal = null"
+    >
+      <div class="form-tip">
+        {{ selectedSalaryRow.name }} · {{ appliedSalaryFilters.month }} · 本月独立提成
+        {{ currency(selectedSalaryRow.independentCommission, 2) }}
+      </div>
+      <el-table :data="commissionDetails" stripe max-height="520">
+        <el-table-column label="发生时间" min-width="165">
+          <template #default="{ row }">{{ fullDateTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column prop="memberName" label="顾客" min-width="95" />
+        <el-table-column prop="businessName" label="项目/套餐" min-width="170" />
+        <el-table-column label="比例" min-width="85">
+          <template #default="{ row }">{{ Number((row.rate * 100).toFixed(2)) }}%</template>
+        </el-table-column>
+        <el-table-column label="本金支付" min-width="110">
+          <template #default="{ row }">{{ currency(row.balanceAmount, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="额外付款" min-width="110">
+          <template #default="{ row }">{{ currency(row.cashAmount, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="已计充值提成" min-width="125">
+          <template #default="{ row }">{{ currency(row.rechargeOffset, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="余额补差" min-width="110">
+          <template #default="{ row }">{{ currency(row.balanceCommission, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="现金提成" min-width="110">
+          <template #default="{ row }">{{ currency(row.cashCommission, 2) }}</template>
+        </el-table-column>
+        <el-table-column label="本人本次提成" min-width="125" fixed="right">
+          <template #default="{ row }">
+            <strong class="money">{{ currency(row.employeeCommission, 2) }}</strong>
+          </template>
+        </el-table-column>
+      </el-table>
     </BaseModal>
   </div>
 </template>

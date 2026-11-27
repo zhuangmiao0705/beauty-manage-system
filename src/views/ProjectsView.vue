@@ -2,6 +2,8 @@
 import { computed, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Plus, Search } from 'lucide-vue-next'
+import CommissionFields from '../components/CommissionFields.vue'
+import { authStore } from '../auth/store'
 import BaseModal from '../components/BaseModal.vue'
 import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
@@ -26,6 +28,8 @@ const editingProject = ref<ProjectDefinition | null>(null)
 const formRef = ref<FormInstance>()
 const form = reactive<ProjectDefinitionInput>({
   name: '',
+  commissionMode: 'general',
+  commissionRate: 0,
   duration: 60,
   price: 0,
   productId: null,
@@ -69,12 +73,22 @@ function openProject(item?: ProjectDefinition) {
     item
       ? {
           name: item.name,
+          commissionMode: item.commissionMode,
+          commissionRate: item.commissionRate,
           duration: item.duration,
           price: item.price,
           productId: item.productId,
           consumptionQuantity: item.consumptionQuantity
         }
-      : { name: '', duration: 60, price: 0, productId: null, consumptionQuantity: 0 }
+      : {
+          name: '',
+          commissionMode: 'general',
+          commissionRate: 0,
+          duration: 60,
+          price: 0,
+          productId: null,
+          consumptionQuantity: 0
+        }
   )
   modalVisible.value = true
 }
@@ -176,6 +190,15 @@ async function toggleProject(item: ProjectDefinition) {
         <el-table-column label="更新时间" min-width="165">
           <template #default="{ row }">{{ fullDateTime(row.updatedAt) }}</template>
         </el-table-column>
+        <el-table-column label="提成规则" min-width="150">
+          <template #default="{ row }">
+            {{
+              row.commissionMode === 'independent'
+                ? `独立 ${Number((row.commissionRate * 100).toFixed(2))}%`
+                : '员工通用规则'
+            }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openProject(row as ProjectDefinition)">编辑</el-button>
@@ -221,6 +244,11 @@ async function toggleProject(item: ProjectDefinition) {
             <el-input-number v-model="form.price" :min="0" :controls="false" align="left" />
             <div class="form-tip">价格填写 0 时，将作为赠送项目使用。</div>
           </el-form-item>
+          <CommissionFields
+            v-if="authStore.user?.role === 'manager'"
+            v-model:mode="form.commissionMode"
+            v-model:rate="form.commissionRate"
+          />
           <el-form-item label="消耗产品" prop="productId">
             <el-select v-model="form.productId" placeholder="请选择消耗产品">
               <el-option label="无消耗" value="" />

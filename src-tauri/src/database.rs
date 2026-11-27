@@ -1780,6 +1780,53 @@ pub(crate) fn migrate_database(connection: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
 
+    for table in ["projects", "packages", "services", "package_purchases"] {
+        add_column(connection, table, "commission_mode TEXT NOT NULL DEFAULT 'general' CHECK(commission_mode IN ('general','independent'))")?;
+        add_column(connection, table, "commission_rate REAL NOT NULL DEFAULT 0 CHECK(commission_rate>=0 AND commission_rate<=1)")?;
+    }
+    add_column(
+        connection,
+        "packages",
+        "gift_package_id TEXT REFERENCES packages(id)",
+    )?;
+    add_column(
+        connection,
+        "packages",
+        "gift_uses INTEGER NOT NULL DEFAULT 0 CHECK(gift_uses>=0)",
+    )?;
+    add_column(
+        connection,
+        "package_purchases",
+        "parent_purchase_id TEXT REFERENCES package_purchases(id)",
+    )?;
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS commission_entries (
+        id TEXT PRIMARY KEY, payload TEXT NOT NULL
+    );",
+        )
+        .map_err(|error| error.to_string())?;
+    let migrated: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version=21",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if migrated == 0 {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        crate::commission::sync(&transaction, true)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (21,?1)",
+                params![now],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
+
     connection
         .execute(
             "UPDATE accounts SET display_name='木子店长' WHERE username='admin' AND display_name='慕姿店长'",
@@ -1858,6 +1905,35 @@ pub(crate) fn list_accounts(connection: &Connection) -> Result<Vec<AccountRecord
 }
 
 pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
+    if connection.is_autocommit() {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        crate::commission::sync(&transaction, false)?;
+        transaction.commit().map_err(|error| error.to_string())?;
+    } else {
+        crate::commission::sync(connection, false)?;
+    }
+    raw_snapshot(connection)
+}
+
+pub(crate) fn raw_snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
+    let commission_entries = {
+        let mut statement = connection
+            .prepare("SELECT payload FROM commission_entries ORDER BY rowid")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(
+                serde_json::from_str::<CommissionEntry>(&row.map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        entries
+    };
     let mut members = {
         let mut statement = connection.prepare("SELECT id,name,phone,balance,principal_balance,gift_balance,total_recharge,total_consumption,join_date,last_visit,status FROM members ORDER BY join_date DESC").map_err(|e| e.to_string())?;
         let rows = statement
@@ -1918,7 +1994,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let mut services = {
-        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,service_name,service_type,duration,amount,commission,commission_rule_version,package_purchase_id,project_id,balance_payment_amount,external_payment_amount,payment_method,gift_deduction,principal_deduction,transaction_id,created_at,status FROM services ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,service_name,service_type,duration,amount,commission,commission_rule_version,package_purchase_id,project_id,balance_payment_amount,external_payment_amount,payment_method,gift_deduction,principal_deduction,transaction_id,created_at,status,commission_mode,commission_rate,cancelled_at FROM services ORDER BY created_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 let employee: String = row.get(3)?;
@@ -1944,6 +2020,9 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     transaction_id: row.get(17)?,
                     created_at: row.get(18)?,
                     status: row.get(19)?,
+                    commission_mode: row.get(20)?,
+                    commission_rate: row.get(21)?,
+                    cancelled_at: row.get(22)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -1982,7 +2061,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
         let mut statement = connection
             .prepare(
                 "SELECT id,name,duration,price,product_id,consumption_quantity,
-                        status,created_at,updated_at
+                        status,created_at,updated_at,commission_mode,commission_rate
                  FROM projects ORDER BY created_at DESC,id",
             )
             .map_err(|e| e.to_string())?;
@@ -1998,6 +2077,8 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     status: row.get(6)?,
                     created_at: row.get(7)?,
                     updated_at: row.get(8)?,
+                    commission_mode: row.get(9)?,
+                    commission_rate: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2189,7 +2270,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let packages = {
-        let mut statement = connection.prepare("SELECT id,name,price,total_uses,limit_type,validity_days,package_type,product_id,consumption_quantity,status,created_at,updated_at FROM packages ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,name,price,total_uses,limit_type,validity_days,package_type,product_id,consumption_quantity,status,created_at,updated_at,commission_mode,commission_rate,gift_package_id,gift_uses FROM packages ORDER BY created_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackageDefinition {
@@ -2205,6 +2286,10 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     status: row.get(9)?,
                     created_at: row.get(10)?,
                     updated_at: row.get(11)?,
+                    commission_mode: row.get(12)?,
+                    commission_rate: row.get(13)?,
+                    gift_package_id: row.get(14)?,
+                    gift_uses: row.get(15)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2212,7 +2297,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
             .map_err(|e| e.to_string())?
     };
     let package_purchases = {
-        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,single_original_price,total_uses,remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id,refunded_at,refund_amount,refund_balance_amount,refund_cash_amount,note FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
+        let mut statement = connection.prepare("SELECT id,member_id,member_name,employee,package_id,package_name,package_type,price,single_original_price,total_uses,remaining_uses,limit_type,validity_days,activated_at,expires_at,payment_method,balance_payment_amount,cash_payment_amount,status,purchased_at,last_consumed_at,commission,commission_rule_version,transaction_id,refunded_at,refund_amount,refund_balance_amount,refund_cash_amount,note,commission_mode,commission_rate,parent_purchase_id FROM package_purchases ORDER BY purchased_at DESC").map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 Ok(PackagePurchase {
@@ -2235,7 +2320,6 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     balance_payment_amount: row.get(16)?,
                     cash_payment_amount: row.get(17)?,
                     status: if row.get::<_, String>(18)? == "active"
-                        && row.get::<_, String>(11)? == "time"
                         && row
                             .get::<_, Option<String>>(14)?
                             .is_some_and(|expires_at| expires_at <= Utc::now().to_rfc3339())
@@ -2254,6 +2338,9 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
                     refund_balance_amount: row.get(26)?,
                     refund_cash_amount: row.get(27)?,
                     note: row.get(28)?,
+                    commission_mode: row.get(29)?,
+                    commission_rate: row.get(30)?,
+                    parent_purchase_id: row.get(31)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2345,6 +2432,7 @@ pub(crate) fn snapshot(connection: &Connection) -> Result<AppSnapshot, String> {
     };
 
     Ok(AppSnapshot {
+        commission_entries,
         members,
         transactions,
         services,
@@ -2371,6 +2459,7 @@ pub(crate) fn snapshot_for_user(
 ) -> Result<AppSnapshot, String> {
     let mut data = snapshot(connection)?;
     if user.role != "manager" {
+        data.commission_entries.clear();
         data.employee_compensations.clear();
         data.employee_status_events.clear();
         data.commission_configs.clear();

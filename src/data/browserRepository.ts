@@ -224,6 +224,8 @@ export function addBrowserService(state: AppSnapshot, input: ServiceInput) {
         ?.normalServiceCommission ?? 5,
     commissionRuleVersion: COMMISSION_RULE_VERSION,
     packagePurchaseId: null,
+    commissionMode: project.commissionMode,
+    commissionRate: project.commissionRate,
     projectId: project.id,
     balancePaymentAmount,
     externalPaymentAmount,
@@ -288,12 +290,16 @@ export function cancelBrowserService(state: AppSnapshot, serviceId: string) {
     )
     const purchase = state.packagePurchases.find(item => item.id === service.packagePurchaseId)
     if (!consumption || !purchase) throw new Error('套餐消耗流水或购买记录不存在')
+    if (purchase.refundedAt) throw new Error('已退款的套餐不能撤销消费')
 
     consumption.status = 'cancelled'
     consumption.cancelledAt = now
     if (purchase.limitType === 'count') {
       purchase.remainingUses = Math.min(purchase.totalUses, purchase.remainingUses + 1)
-      purchase.status = 'active'
+      purchase.status =
+        purchase.expiresAt && new Date(purchase.expiresAt).getTime() <= Date.now()
+          ? 'completed'
+          : 'active'
     } else {
       purchase.status =
         purchase.expiresAt && new Date(purchase.expiresAt).getTime() > Date.now()
@@ -310,6 +316,7 @@ export function cancelBrowserService(state: AppSnapshot, serviceId: string) {
       appointment.completedServiceId = null
       appointment.updatedAt = now
     }
+    service.cancelledAt = now
     service.status = 'cancelled'
     return
   }
@@ -324,6 +331,7 @@ export function cancelBrowserService(state: AppSnapshot, serviceId: string) {
     member.balance = Math.round((member.principalBalance + member.giftBalance) * 100) / 100
     member.totalConsumption = Math.max(0, member.totalConsumption - service.amount)
   }
+  service.cancelledAt = now
   service.status = 'cancelled'
   const transaction = state.transactions.find(item => item.id === service.transactionId)
   if (transaction) {

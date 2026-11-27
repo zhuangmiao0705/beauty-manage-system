@@ -4,6 +4,9 @@ import { ElMessageBox } from 'element-plus'
 import 'element-plus/es/components/message-box/style/css'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Eye, MinusCircle, PackagePlus, RotateCcw, Search } from 'lucide-vue-next'
+import { purchaseBrowserPackage } from '../data/browserBusinessRepository'
+import { synchronizeCommissions } from '../services/commission'
+import type { AppSnapshot } from '../types'
 import BaseModal from '../components/BaseModal.vue'
 import EmployeeSelect from '../components/EmployeeSelect.vue'
 import MemberSelect from '../components/MemberSelect.vue'
@@ -147,8 +150,38 @@ const selectedPackage = computed(() =>
 const selectedMember = computed(() =>
   salonStore.members.find(item => item.id === purchaseForm.memberId)
 )
+const purchaseCommissionPreview = computed(() => {
+  if (
+    authStore.user?.role !== 'manager' ||
+    selectedPackage.value?.commissionMode !== 'independent' ||
+    !selectedMember.value ||
+    !purchaseForm.employee ||
+    !purchaseForm.activatedAt
+  )
+    return null
+  try {
+    const draft: AppSnapshot = JSON.parse(JSON.stringify(salonStore))
+    const existing = new Set(draft.packagePurchases.map(item => item.id))
+    purchaseBrowserPackage(draft, {
+      ...purchaseForm,
+      activatedAt: new Date(purchaseForm.activatedAt.replace(' ', 'T')).toISOString()
+    })
+    synchronizeCommissions(draft)
+    const parent = draft.packagePurchases.find(
+      item => !existing.has(item.id) && !item.parentPurchaseId
+    )
+    return {
+      entry: draft.commissionEntries.find(
+        item => item.sourceType === 'package' && item.sourceId === parent?.id
+      ),
+      error: ''
+    }
+  } catch (reason) {
+    return { entry: undefined, error: errorMessage(reason, '暂无法计算提成') }
+  }
+})
 const timePackagePreview = computed(() => {
-  if (selectedPackage.value?.limitType !== 'time' || !purchaseForm.activatedAt) return null
+  if (!selectedPackage.value?.validityDays || !purchaseForm.activatedAt) return null
   const activatedAt = new Date(purchaseForm.activatedAt.replace(' ', 'T'))
   if (Number.isNaN(activatedAt.getTime())) return null
   const elapsedDays = Math.max(0, Math.floor((Date.now() - activatedAt.getTime()) / 86_400_000))
@@ -302,8 +335,8 @@ function openFlows(purchase: PackagePurchase) {
 
 function isExpiredTimePackage(purchase: PackagePurchase) {
   return (
-    purchase.limitType === 'time' &&
-    (!purchase.expiresAt || new Date(purchase.expiresAt).getTime() <= Date.now())
+    (purchase.limitType === 'time' && !purchase.expiresAt) ||
+    Boolean(purchase.expiresAt && new Date(purchase.expiresAt).getTime() <= Date.now())
   )
 }
 
@@ -567,6 +600,11 @@ async function submitPackageRefund() {
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column v-if="authStore.user?.role === 'manager'" label="成交提成" min-width="120">
+          <template #default="{ row }">
+            {{ row.commissionMode === 'independent' ? currency(row.commission, 2) : '通用规则' }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="270" fixed="right">
           <template #default="{ row }">
             <div class="element-row-actions">
@@ -587,9 +625,17 @@ async function submitPackageRefund() {
                 size="small"
                 type="danger"
                 plain
-                :disabled="Boolean(row.refundedAt) || isExpiredTimePackage(row as PackagePurchase)"
+                :disabled="
+                  Boolean(row.refundedAt) ||
+                  Boolean(row.parentPurchaseId) ||
+                  isExpiredTimePackage(row as PackagePurchase)
+                "
                 :title="
-                  isExpiredTimePackage(row as PackagePurchase) ? '时间套餐已到期，不能退款' : ''
+                  row.parentPurchaseId
+                    ? '赠送权益随主套餐退款一并关闭'
+                    : isExpiredTimePackage(row as PackagePurchase)
+                      ? '套餐已到期，不能退款'
+                      : ''
                 "
                 @click="openRefund(row as PackagePurchase)"
               >
@@ -702,6 +748,26 @@ async function submitPackageRefund() {
           {{ fullDateTime(timePackagePreview.expiresAt.toISOString()) }}。
         </template>
       </div>
+      <el-alert
+        v-if="purchaseCommissionPreview?.entry"
+        type="info"
+        :closable="false"
+        class="purchase-commission-preview"
+      >
+        <template #title>
+          预计本次销售提成 {{ currency(purchaseCommissionPreview.entry.commission, 2) }}
+        </template>
+        已计充值提成 {{ currency(purchaseCommissionPreview.entry.rechargeOffset, 2) }}； 本金补差
+        {{ currency(purchaseCommissionPreview.entry.balanceCommission, 2) }} + 额外付款提成
+        {{ currency(purchaseCommissionPreview.entry.cashCommission, 2) }}。
+        本次成交不计通用绩效，后续核销不再叠加手工提成。
+      </el-alert>
+      <el-alert
+        v-else-if="purchaseCommissionPreview?.error"
+        :title="purchaseCommissionPreview.error"
+        type="warning"
+        :closable="false"
+      />
       <template #footer>
         <el-button @click="modal = null">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submitPurchase">确认购买</el-button>

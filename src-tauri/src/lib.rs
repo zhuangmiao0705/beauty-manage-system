@@ -1,4 +1,5 @@
 mod commands;
+mod commission;
 mod database;
 mod models;
 mod security;

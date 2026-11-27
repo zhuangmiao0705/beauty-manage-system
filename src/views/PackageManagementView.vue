@@ -2,6 +2,7 @@
 import { computed, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { Plus, Search } from 'lucide-vue-next'
+import CommissionFields from '../components/CommissionFields.vue'
 import BaseModal from '../components/BaseModal.vue'
 import TablePagination from '../components/TablePagination.vue'
 import { useTablePagination } from '../composables/useTablePagination'
@@ -42,10 +43,14 @@ const editingPackage = ref<PackageDefinition | null>(null)
 const packageFormRef = ref<FormInstance>()
 const packageForm = reactive<PackageDefinitionInput>({
   name: '',
+  commissionMode: 'general',
+  commissionRate: 0,
+  giftPackageId: null,
+  giftUses: 0,
   price: 0,
   totalUses: 1,
   limitType: 'count',
-  validityDays: 30,
+  validityDays: 0,
   packageType: '套盒',
   productId: null,
   consumptionQuantity: 0
@@ -96,6 +101,10 @@ function openPackage(item?: PackageDefinition) {
     item
       ? {
           name: item.name,
+          commissionMode: item.commissionMode,
+          commissionRate: item.commissionRate,
+          giftPackageId: item.giftPackageId,
+          giftUses: item.giftUses,
           price: item.price,
           totalUses: item.totalUses,
           limitType: item.limitType,
@@ -106,10 +115,14 @@ function openPackage(item?: PackageDefinition) {
         }
       : {
           name: '',
+          commissionMode: 'general',
+          commissionRate: 0,
+          giftPackageId: null,
+          giftUses: 0,
           price: 0,
           totalUses: 1,
           limitType: 'count',
-          validityDays: 30,
+          validityDays: 0,
           packageType: '套盒',
           productId: null,
           consumptionQuantity: 0
@@ -123,7 +136,7 @@ async function submitPackage() {
   const input: PackageDefinitionInput = {
     ...packageForm,
     totalUses: packageForm.limitType === 'count' ? packageForm.totalUses : 1,
-    validityDays: packageForm.limitType === 'time' ? packageForm.validityDays : 0
+    validityDays: packageForm.validityDays
   }
   saving.value = true
   try {
@@ -259,6 +272,24 @@ async function togglePackage(item: PackageDefinition) {
         <el-table-column label="创建时间" min-width="165">
           <template #default="{ row }">{{ fullDateTime(row.createdAt) }}</template>
         </el-table-column>
+        <el-table-column label="提成规则" min-width="145">
+          <template #default="{ row }">
+            {{
+              row.commissionMode === 'independent'
+                ? `独立 ${Number((row.commissionRate * 100).toFixed(2))}%`
+                : '员工通用规则'
+            }}
+          </template>
+        </el-table-column>
+        <el-table-column label="赠送权益" min-width="170">
+          <template #default="{ row }">
+            {{
+              row.giftPackageId
+                ? `${salonStore.packages.find(item => item.id === row.giftPackageId)?.name ?? '赠送套餐'} × ${row.giftUses}次`
+                : '—'
+            }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openPackage(row as PackageDefinition)">编辑</el-button>
@@ -325,15 +356,43 @@ async function togglePackage(item: PackageDefinition) {
               align="left"
             />
           </el-form-item>
-          <el-form-item v-else label="有效天数" prop="validityDays">
+          <el-form-item
+            :label="packageForm.limitType === 'count' ? '有效天数（0为不限期）' : '有效天数'"
+            prop="validityDays"
+          >
             <el-input-number
               v-model="packageForm.validityDays"
-              :min="1"
+              :min="packageForm.limitType === 'count' ? 0 : 1"
               :precision="0"
               :controls="false"
               align="left"
             />
-            <div class="form-tip">从会员购买当天开始计算，有效期内不限使用次数。</div>
+            <div class="form-tip">从开卡时间计算有效期；次数卡同时受次数和有效期限制。</div>
+          </el-form-item>
+          <CommissionFields
+            v-model:mode="packageForm.commissionMode"
+            v-model:rate="packageForm.commissionRate"
+          />
+          <el-form-item label="赠送套餐">
+            <el-select v-model="packageForm.giftPackageId" clearable placeholder="无赠送">
+              <el-option
+                v-for="item in salonStore.packages.filter(
+                  item => item.status === 'active' && item.id !== editingPackage?.id
+                )"
+                :key="item.id"
+                :label="item.name"
+                :value="item.id"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="packageForm.giftPackageId" label="赠送次数">
+            <el-input-number
+              v-model="packageForm.giftUses"
+              :min="1"
+              :precision="0"
+              :controls="false"
+            />
+            <div class="form-tip">生成单独的赠送权益，继承主卡有效期，销售及手工提成为0。</div>
           </el-form-item>
           <el-form-item label="消耗产品" prop="productId">
             <el-select v-model="packageForm.productId" placeholder="请选择消耗产品">

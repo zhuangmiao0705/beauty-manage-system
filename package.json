@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "node tests/run.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.0",
     "@vitejs/plugin-vue": "^5.2.1",
+    "esbuild": "^0.25.12",
     "prettier": "^3.9.6",
     "typescript": "~5.7.2",
     "unplugin-auto-import": "^21.1.0",

@@ -1,3 +1,4 @@
+import { synchronizeCommissions, validateCommissionSettings } from '../services/commission'
 import {
   COMMISSION_RULE_VERSION,
   DEFAULT_COMMISSION_CONFIG,
@@ -245,6 +246,7 @@ function commissionConfigAt(snapshot: AppSnapshot, createdAt: string) {
 }
 
 export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
+  const legacyCommissionData = !snapshot.commissionEntries
   const now = new Date().toISOString()
   snapshot.employeeStatusEvents ??= []
   snapshot.employeeCompensations ??= []
@@ -281,22 +283,21 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
 
   snapshot.packagePurchases.forEach(purchase => {
     const packageDefinition = snapshot.packages.find(item => item.id === purchase.packageId)
+    purchase.commissionMode ??= 'general'
+    purchase.commissionRate ??= 0
+    purchase.parentPurchaseId ??= null
     purchase.packageType ??= packageDefinition?.packageType ?? '套盒'
     purchase.limitType ??= packageDefinition?.limitType ?? 'count'
     purchase.validityDays ??= packageDefinition?.validityDays ?? 0
     purchase.activatedAt ??= purchase.purchasedAt
     purchase.expiresAt ??=
-      purchase.limitType === 'time' && purchase.validityDays > 0
+      purchase.validityDays > 0
         ? new Date(
             new Date(purchase.activatedAt ?? purchase.purchasedAt).getTime() +
               purchase.validityDays * 86_400_000
           ).toISOString()
         : null
-    if (
-      purchase.limitType === 'time' &&
-      purchase.expiresAt &&
-      new Date(purchase.expiresAt).getTime() <= Date.now()
-    )
+    if (purchase.expiresAt && new Date(purchase.expiresAt).getTime() <= Date.now())
       purchase.status = 'completed'
     purchase.balancePaymentAmount ??= purchase.paymentMethod === '会员余额' ? purchase.price : 0
     purchase.cashPaymentAmount ??= purchase.paymentMethod === '现金' ? purchase.price : 0
@@ -315,6 +316,10 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   })
 
   snapshot.packages.forEach(item => {
+    item.commissionMode ??= 'general'
+    item.commissionRate ??= 0
+    item.giftPackageId ??= null
+    item.giftUses ??= 0
     item.packageType ??= '套盒'
     item.limitType ??= 'count'
     item.validityDays ??= 0
@@ -323,6 +328,8 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
   })
 
   snapshot.projects.forEach(item => {
+    item.commissionMode ??= 'general'
+    item.commissionRate ??= 0
     item.productId ??= null
     item.consumptionQuantity ??= 0
   })
@@ -393,6 +400,9 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
     }
   })
   snapshot.services.forEach(service => {
+    service.commissionMode ??= 'general'
+    service.commissionRate ??= 0
+    service.cancelledAt ??= null
     service.serviceType ??= '普通手工'
     service.packagePurchaseId ??= null
     service.projectId ??= null
@@ -429,9 +439,26 @@ export function normalizeBusinessSnapshot(snapshot: AppSnapshot) {
       purchase.commissionRuleVersion = PACKAGE_COMMISSION_RULE_VERSION
     }
   })
+  synchronizeCommissions(snapshot, legacyCommissionData)
+  for (const entry of snapshot.commissionEntries) {
+    if (entry.sourceType === 'recharge') {
+      const record = snapshot.transactions.find(item => item.id === entry.sourceId)
+      if (record) record.commission = entry.commission
+    } else if (entry.sourceType === 'package') {
+      const record = snapshot.packagePurchases.find(item => item.id === entry.sourceId)
+      if (record) record.commission = entry.commission
+    } else if (entry.sourceType === 'refund') {
+      const record = snapshot.refundRecords.find(item => item.id === entry.sourceId)
+      if (record) record.commission = -entry.commission
+    } else if (entry.sourceType === 'service' && entry.mode === 'independent') {
+      const record = snapshot.services.find(item => item.id === entry.sourceId)
+      if (record) record.commission = entry.commission
+    }
+  }
 }
 
 export function createBrowserProject(snapshot: AppSnapshot, input: ProjectDefinitionInput) {
+  validateCommissionSettings(input)
   const name = input.name.trim()
   if (!name || input.duration <= 0 || input.price < 0 || input.consumptionQuantity < 0)
     throw new Error('项目信息无效')
@@ -441,6 +468,8 @@ export function createBrowserProject(snapshot: AppSnapshot, input: ProjectDefini
     id: crypto.randomUUID(),
     name,
     duration: input.duration,
+    commissionMode: input.commissionMode,
+    commissionRate: input.commissionMode === 'independent' ? input.commissionRate : 0,
     price: roundMoney(input.price),
     productId: input.productId || null,
     consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
@@ -457,6 +486,7 @@ export function updateBrowserProject(
 ) {
   const project = snapshot.projects.find(item => item.id === projectId)
   if (!project) throw new Error('项目不存在')
+  validateCommissionSettings(input)
   const name = input.name.trim()
   if (!name || input.duration <= 0 || input.price < 0 || input.consumptionQuantity < 0)
     throw new Error('项目信息无效')
@@ -465,6 +495,8 @@ export function updateBrowserProject(
   Object.assign(project, {
     name,
     duration: input.duration,
+    commissionMode: input.commissionMode,
+    commissionRate: input.commissionMode === 'independent' ? input.commissionRate : 0,
     price: roundMoney(input.price),
     productId: input.productId || null,
     consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
@@ -580,12 +612,22 @@ export function saveBrowserAttendance(snapshot: AppSnapshot, input: AttendanceIn
 }
 
 export function createBrowserPackage(snapshot: AppSnapshot, input: PackageDefinitionInput) {
+  validateCommissionSettings(input)
+  if (
+    input.giftPackageId &&
+    (!Number.isInteger(input.giftUses) ||
+      input.giftUses <= 0 ||
+      !snapshot.packages.some(item => item.id === input.giftPackageId && item.status === 'active'))
+  )
+    throw new Error('请选择有效的赠送套餐和赠送次数')
   const name = input.name.trim()
   if (
     !name ||
     !Number.isFinite(input.price) ||
     input.price < 0 ||
     !['count', 'time'].includes(input.limitType) ||
+    !Number.isInteger(input.validityDays) ||
+    input.validityDays < 0 ||
     (input.limitType === 'count' && (!Number.isInteger(input.totalUses) || input.totalUses <= 0)) ||
     (input.limitType === 'time' &&
       (!Number.isInteger(input.validityDays) || input.validityDays <= 0)) ||
@@ -600,8 +642,12 @@ export function createBrowserPackage(snapshot: AppSnapshot, input: PackageDefini
     price: roundMoney(input.price),
     totalUses: input.limitType === 'count' ? input.totalUses : 1,
     limitType: input.limitType,
-    validityDays: input.limitType === 'time' ? input.validityDays : 0,
+    validityDays: input.validityDays,
     packageType: input.packageType,
+    commissionMode: input.commissionMode,
+    commissionRate: input.commissionMode === 'independent' ? input.commissionRate : 0,
+    giftPackageId: input.giftPackageId || null,
+    giftUses: input.giftPackageId ? input.giftUses : 0,
     productId: input.productId || null,
     consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
     status: 'active',
@@ -617,12 +663,25 @@ export function updateBrowserPackage(
 ) {
   const packageItem = snapshot.packages.find(item => item.id === packageId)
   if (!packageItem) throw new Error('套餐不存在')
+  validateCommissionSettings(input)
+  if (
+    input.giftPackageId &&
+    (!Number.isInteger(input.giftUses) ||
+      input.giftUses <= 0 ||
+      !snapshot.packages.some(
+        item => item.id === input.giftPackageId && item.status === 'active'
+      ) ||
+      input.giftPackageId === packageId)
+  )
+    throw new Error('请选择有效的赠送套餐和赠送次数')
   const name = input.name.trim()
   if (
     !name ||
     !Number.isFinite(input.price) ||
     input.price < 0 ||
     !['count', 'time'].includes(input.limitType) ||
+    !Number.isInteger(input.validityDays) ||
+    input.validityDays < 0 ||
     (input.limitType === 'count' && (!Number.isInteger(input.totalUses) || input.totalUses <= 0)) ||
     (input.limitType === 'time' &&
       (!Number.isInteger(input.validityDays) || input.validityDays <= 0)) ||
@@ -636,7 +695,7 @@ export function updateBrowserPackage(
     name,
     price: roundMoney(input.price),
     totalUses: input.limitType === 'count' ? input.totalUses : 1,
-    validityDays: input.limitType === 'time' ? input.validityDays : 0,
+    validityDays: input.validityDays,
     productId: input.productId || null,
     consumptionQuantity: input.productId ? input.consumptionQuantity : 0,
     updatedAt: new Date().toISOString()
@@ -690,7 +749,7 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     throw new Error('开卡时间无效或晚于当前时间')
   const activatedAt = activatedAtValue.toISOString()
   const expiresAt =
-    packageItem.limitType === 'time'
+    packageItem.validityDays > 0
       ? new Date(activatedAtValue.getTime() + packageItem.validityDays * 86_400_000).toISOString()
       : null
   const transactionId = packageItem.price > 0 ? crypto.randomUUID() : ''
@@ -740,6 +799,9 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     paymentMethod: input.paymentMethod,
     balancePaymentAmount,
     cashPaymentAmount,
+    commissionMode: packageItem.commissionMode,
+    commissionRate: packageItem.commissionRate,
+    parentPurchaseId: null,
     commission: roundMoney(
       cashPaymentAmount *
         (compensation?.baseCommissionRate ?? DEFAULT_EMPLOYEE_COMPENSATION.baseCommissionRate)
@@ -756,6 +818,33 @@ export function purchaseBrowserPackage(snapshot: AppSnapshot, input: PackagePurc
     refundCashAmount: 0,
     note: input.note.trim()
   })
+  if (packageItem.giftPackageId && packageItem.giftUses > 0) {
+    const gift = snapshot.packages.find(
+      item => item.id === packageItem.giftPackageId && item.status === 'active'
+    )
+    if (!gift) throw new Error('赠送套餐已停用，请先调整套餐配置')
+    const parent = snapshot.packagePurchases[0]!
+    snapshot.packagePurchases.unshift({
+      ...parent,
+      id: crypto.randomUUID(),
+      packageId: gift.id,
+      packageName: `${gift.name}（赠送）`,
+      packageType: gift.packageType,
+      price: 0,
+      totalUses: packageItem.giftUses,
+      remainingUses: packageItem.giftUses,
+      limitType: 'count',
+      paymentMethod: '现金',
+      balancePaymentAmount: 0,
+      cashPaymentAmount: 0,
+      transactionId: '',
+      commissionMode: 'independent',
+      commissionRate: 0,
+      commission: 0,
+      parentPurchaseId: purchaseId,
+      note: `随${packageItem.name}赠送`
+    })
+  }
 }
 
 export function refundBrowserPackage(
@@ -765,16 +854,20 @@ export function refundBrowserPackage(
 ) {
   const purchase = snapshot.packagePurchases.find(item => item.id === input.purchaseId)
   if (!purchase) throw new Error('套餐购买记录不存在')
+  if (purchase.parentPurchaseId) throw new Error('赠送权益请随原购买套餐一并处理')
   if (purchase.refundedAt) throw new Error('该套餐已经退款，请勿重复操作')
   if (
-    purchase.limitType === 'time' &&
+    purchase.expiresAt &&
     (!purchase.expiresAt || new Date(purchase.expiresAt).getTime() <= Date.now())
   )
     throw new Error('该时间套餐已经到期，不能发起退款')
   if (
     snapshot.appointments.some(
       item =>
-        item.packagePurchaseId === purchase.id &&
+        (item.packagePurchaseId === purchase.id ||
+          snapshot.packagePurchases.some(
+            child => child.parentPurchaseId === purchase.id && child.id === item.packagePurchaseId
+          )) &&
         ['pending', 'arrived', 'in_service'].includes(item.status)
     )
   )
@@ -833,6 +926,13 @@ export function refundBrowserPackage(
     note: input.note.trim() || `套餐退款：${purchase.packageName}，已做${consumedCount}次`
   })
   const transaction = snapshot.transactions.find(item => item.id === purchase.transactionId)
+  snapshot.packagePurchases
+    .filter(item => item.parentPurchaseId === purchase.id)
+    .forEach(item => {
+      item.status = 'completed'
+      item.refundedAt = purchase.refundedAt
+      item.remainingUses = 0
+    })
   if (transaction) transaction.note = `${transaction.note}；套餐已退款${refundAmount.toFixed(2)}元`
 }
 
@@ -852,9 +952,11 @@ export function consumeBrowserPackage(snapshot: AppSnapshot, input: PackageConsu
   const compensation = snapshot.employeeCompensations.find(item => item.employeeId === employee.id)
   const serviceType = purchase.packageType === '普通' ? '普通手工' : '套盒手工'
   const commission =
-    serviceType === '普通手工'
-      ? (compensation?.normalServiceCommission ?? 5)
-      : (compensation?.packageServiceCommission ?? 10)
+    purchase.commissionMode === 'independent'
+      ? 0
+      : serviceType === '普通手工'
+        ? (compensation?.normalServiceCommission ?? 5)
+        : (compensation?.packageServiceCommission ?? 10)
   snapshot.services.unshift({
     id: serviceId,
     memberId: purchase.memberId,
@@ -867,6 +969,8 @@ export function consumeBrowserPackage(snapshot: AppSnapshot, input: PackageConsu
     commission,
     commissionRuleVersion: COMMISSION_RULE_VERSION,
     packagePurchaseId: purchase.id,
+    commissionMode: purchase.commissionMode ?? 'general',
+    commissionRate: purchase.commissionRate ?? 0,
     createdAt: now,
     status: 'completed'
   })

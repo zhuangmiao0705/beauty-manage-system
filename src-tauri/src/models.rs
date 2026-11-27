@@ -35,6 +35,7 @@ pub(crate) struct AccountRecord {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppSnapshot {
+    pub(crate) commission_entries: Vec<CommissionEntry>,
     pub(crate) members: Vec<Member>,
     pub(crate) transactions: Vec<TransactionRecord>,
     pub(crate) services: Vec<ServiceRecord>,
@@ -117,6 +118,9 @@ pub(crate) struct ServiceRecord {
     pub(crate) transaction_id: Option<String>,
     pub(crate) created_at: String,
     pub(crate) status: String,
+    pub(crate) commission_mode: String,
+    pub(crate) commission_rate: f64,
+    pub(crate) cancelled_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -131,6 +135,8 @@ pub(crate) struct ProjectDefinition {
     pub(crate) status: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    pub(crate) commission_mode: String,
+    pub(crate) commission_rate: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -249,6 +255,10 @@ pub(crate) struct PackageDefinition {
     pub(crate) status: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    pub(crate) commission_mode: String,
+    pub(crate) commission_rate: f64,
+    pub(crate) gift_package_id: Option<String>,
+    pub(crate) gift_uses: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,6 +293,9 @@ pub(crate) struct PackagePurchase {
     pub(crate) refund_balance_amount: f64,
     pub(crate) refund_cash_amount: f64,
     pub(crate) note: String,
+    pub(crate) commission_mode: String,
+    pub(crate) commission_rate: f64,
+    pub(crate) parent_purchase_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -362,6 +375,8 @@ pub(crate) struct EmployeeSalary {
     pub(crate) active_days: i64,
     pub(crate) work_days: f64,
     pub(crate) meal_days: f64,
+    pub(crate) general_commission: f64,
+    pub(crate) independent_commission: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -412,6 +427,10 @@ pub(crate) struct ProjectDefinitionInput {
     pub(crate) product_id: Option<String>,
     #[serde(default)]
     pub(crate) consumption_quantity: f64,
+    #[serde(default = "general_commission_mode")]
+    pub(crate) commission_mode: String,
+    #[serde(default)]
+    pub(crate) commission_rate: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,6 +506,14 @@ pub(crate) struct PackageDefinitionInput {
     pub(crate) product_id: Option<String>,
     #[serde(default)]
     pub(crate) consumption_quantity: f64,
+    #[serde(default = "general_commission_mode")]
+    pub(crate) commission_mode: String,
+    #[serde(default)]
+    pub(crate) commission_rate: f64,
+    #[serde(default)]
+    pub(crate) gift_package_id: Option<String>,
+    #[serde(default)]
+    pub(crate) gift_uses: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -562,4 +589,49 @@ pub(crate) struct AppointmentCompletionInput {
     pub(crate) appointment_id: String,
     pub(crate) duration: i64,
     pub(crate) external_payment_method: String,
+}
+
+fn general_commission_mode() -> String {
+    "general".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PrincipalAllocation {
+    pub(crate) recharge_id: String,
+    pub(crate) amount: f64,
+    pub(crate) commission: f64,
+    pub(crate) verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommissionEmployee {
+    pub(crate) employee_id: String,
+    pub(crate) commission: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommissionEntry {
+    pub(crate) id: String,
+    pub(crate) source_type: String,
+    pub(crate) source_id: String,
+    pub(crate) member_id: Option<String>,
+    pub(crate) member_name: String,
+    pub(crate) business_name: String,
+    pub(crate) mode: String,
+    pub(crate) rate: f64,
+    pub(crate) amount: f64,
+    pub(crate) balance_amount: f64,
+    pub(crate) cash_amount: f64,
+    pub(crate) performance_amount: f64,
+    pub(crate) recharge_offset: f64,
+    pub(crate) balance_commission: f64,
+    pub(crate) cash_commission: f64,
+    pub(crate) commission: f64,
+    pub(crate) principal_allocations: Vec<PrincipalAllocation>,
+    pub(crate) employees: Vec<CommissionEmployee>,
+    pub(crate) created_at: String,
+    pub(crate) legacy: bool,
 }

@@ -14,6 +14,7 @@ declare module 'vue' {
     AccountTable: typeof import('./components/staff/AccountTable.vue')['default']
     AppSidebar: typeof import('./components/AppSidebar.vue')['default']
     BaseModal: typeof import('./components/BaseModal.vue')['default']
+    CommissionFields: typeof import('./components/CommissionFields.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
     ElCalendar: typeof import('element-plus/es')['ElCalendar']

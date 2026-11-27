@@ -1,6 +1,7 @@
 import type { AppSnapshot } from '../types'
 
 export const seedData: AppSnapshot = {
+  commissionEntries: [],
   members: [],
   transactions: [],
   services: [],
